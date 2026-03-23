@@ -100,9 +100,9 @@ llama-31-8b:
   gpu_count: 1
 
 llama-31-8b-instruct:
-  model_name: "meta-llama/Llama-3.1-8B-Instruct"
+  model_name: "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w8a8"
   model_type: vllm
-  path: "/data/huggingface/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
+  path: "/scratch/$USER/models/llama-31-8b-instruct"
   gpu_count: 1
 
 llama-31-70b:
