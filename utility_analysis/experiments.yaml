@@ -14,6 +14,23 @@ compute_utilities:
     create_agent_config_path: "../../compute_utilities/create_agent.yaml"
     create_agent_config_key: "default"
 
+compute_utilities_roles:
+  script_path: "experiments/compute_utilities/optimize_utility_model.py"
+  description: "Compute and save utilities for a given options file across roles"
+  arguments:
+    model_key: "<model_key>"
+    save_dir: "../../shared_utilities/options_hierarchical_roles/<model_key>"
+    save_suffix: "<model_key>"
+    options_path: "../../shared_options/options_hierarchical.json"
+    roles: "teacher,doctor,judge"
+    comparison_prompt_template_key: "comparison_prompt_template_role_default"
+    with_reasoning: false
+    system_message: "You are a language model."
+    compute_utilities_config_path: "../../compute_utilities/compute_utilities.yaml"
+    compute_utilities_config_key: "thurstonian_active_learning"
+    create_agent_config_path: "../../compute_utilities/create_agent.yaml"
+    create_agent_config_key: "default"
+
 
 # ============= Maximization Experiments ============= #
 
