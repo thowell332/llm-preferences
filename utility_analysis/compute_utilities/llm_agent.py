@@ -16,7 +16,13 @@ import imghdr
 import openai
 from anthropic import Anthropic
 from dotenv import load_dotenv
-from fireworks.client import Fireworks, AsyncFireworks
+try:
+    # Optional. Importing fireworks pulls in protobuf stubs that can conflict with
+    # Colab's preinstalled Google/protobuf packages.
+    from fireworks.client import Fireworks, AsyncFireworks  # type: ignore
+except Exception:  # pragma: no cover
+    Fireworks = None  # type: ignore
+    AsyncFireworks = None  # type: ignore
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from huggingface_hub import login
 from PIL import Image
@@ -317,6 +323,11 @@ class O1OpenAIAgent(OpenAIAgent):
 
 class FireworksAgent(OpenAIAgent):
     def __init__(self, model: str, temperature: float = 0.0, max_tokens: int = 2048):
+        if Fireworks is None or AsyncFireworks is None:
+            raise ImportError(
+                "Fireworks is not available in this environment. "
+                "Install/repair the 'fireworks_ai' dependency or use a non-Fireworks model."
+            )
         super().__init__(temperature, max_tokens)
         self.model = model
         FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY")
