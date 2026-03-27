@@ -102,7 +102,7 @@ llama-31-8b:
 llama-31-8b-instruct:
   model_name: "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w8a8"
   model_type: vllm
-  path: "/scratch/$USER/models/llama-31-8b-instruct"
+  path: "/scratch/thowel02/models/llama-31-8b-instruct"
   gpu_count: 1
 
 llama-31-70b:

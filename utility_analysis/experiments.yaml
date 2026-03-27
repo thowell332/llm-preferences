@@ -22,7 +22,7 @@ compute_utilities_roles:
     save_dir: "../../shared_utilities/options_small_roles/<model_key>"
     save_suffix: "<model_key>"
     options_path: "../../shared_options/options_small.json"
-    roles: "helpful assistant"
+    roles: "helpful assistant, doctor"
     comparison_prompt_template_key: "comparison_prompt_template_role_default"
     with_reasoning: false
     system_message: "You are a language model."

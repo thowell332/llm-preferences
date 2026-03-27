@@ -55,6 +55,7 @@ async def optimize_utility_model(args):
                 create_agent_config_key=args.create_agent_config_key,
                 compute_utilities_config_path=args.compute_utilities_config_path,
                 compute_utilities_config_key=args.compute_utilities_config_key,
+                system_message=args.system_message,
                 comparison_prompt_template=resolved_template,
                 save_dir=args.save_dir,
                 save_suffix=role_save_suffix,
@@ -69,6 +70,7 @@ async def optimize_utility_model(args):
             create_agent_config_key=args.create_agent_config_key,
             compute_utilities_config_path=args.compute_utilities_config_path,
             compute_utilities_config_key=args.compute_utilities_config_key,
+            system_message=args.system_message,
             comparison_prompt_template=template,
             save_dir=args.save_dir,
             save_suffix=args.save_suffix,
@@ -87,6 +89,7 @@ async def main():
     parser.add_argument("--save_suffix", default=None, help="Custom suffix for saved files")
     parser.add_argument("--options_path", default="../shared_options/options_hierarchical_v1.json", help="Path to options file")
     parser.add_argument("--with_reasoning", action="store_true", help="Whether to use reasoning in prompts")
+    parser.add_argument("--system_message", default=None, help="Optional system message override")
     parser.add_argument("--compute_utilities_config_path", default="../compute_utilities.yaml", help="Path to compute_utilities.yaml")
     parser.add_argument("--compute_utilities_config_key", default="default", help="Key to use in compute_utilities.yaml")
     parser.add_argument("--create_agent_config_path", default="../create_agent.yaml", help="Path to create_agent.yaml")

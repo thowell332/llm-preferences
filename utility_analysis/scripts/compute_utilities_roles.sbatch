@@ -4,19 +4,21 @@
 #SBATCH -p gpu,preempt
 #SBATCH -N 1
 #SBATCH -n 2
-#SBATCH --mem=32g
+#SBATCH --mem=64g
 #SBATCH --gres=gpu:a100:1
 #SBATCH --constraint="a100-80G"
-#SBATCH --output=compute_utils_roles_gpu.%j.%N.out
-#SBATCH --error=compute_utils_roles_gpu.%j.%N.err
+#SBATCH --output=logs/compute_utils_roles_gpu.%j.%N.out
+#SBATCH --error=logs/compute_utils_roles_gpu.%j.%N.err
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=thomas.howell@tufts.edu
 
 set -euo pipefail
 
 module purge
-module load miniforge/25.3.0
 module load cuda/12.9.0
+
+# Set home for hugging face to avoid clogging up home directory
+#export HF_HOME="/scratch/${USER}/huggingface"
 
 # Customize these:
 MODEL_KEY="${MODEL_KEY:-llama-31-8b-instruct}"
