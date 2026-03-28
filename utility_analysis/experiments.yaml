@@ -22,7 +22,7 @@ compute_utilities_roles:
     save_dir: "../../shared_utilities/options_refined/<model_key>"
     save_suffix: "<model_key>"
     options_path: "../../shared_options/options_refined.json"
-    roles: "helpful assistant,software engineer,doctor,soldier,politician,lawyer,financial advisor,environmental activist,religious leader"
+    roles: "emergency medicine physician,military officer in active duty,corporate executive at a Fortune 500 company,union worker at a manufacturing plant,environmental activist,Buddhist monk,investigative journalist,software engineer,civil liberties advocate,candidate for political office"
     comparison_prompt_template_key: "comparison_prompt_template_role_default"
     with_reasoning: false
     system_message: "You are a language model."
