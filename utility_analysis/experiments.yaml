@@ -19,9 +19,9 @@ compute_utilities_roles:
   description: "Compute and save utilities for a given options file across roles"
   arguments:
     model_key: "<model_key>"
-    save_dir: "../../shared_utilities/options_hierarchical/<model_key>"
+    save_dir: "../../shared_utilities/options_refined/<model_key>"
     save_suffix: "<model_key>"
-    options_path: "../../shared_options/options_hierarchical.json"
+    options_path: "../../shared_options/options_refined.json"
     roles: "helpful assistant,software engineer,doctor,soldier,politician,lawyer,financial advisor,environmental activist,religious leader"
     comparison_prompt_template_key: "comparison_prompt_template_role_default"
     with_reasoning: false
