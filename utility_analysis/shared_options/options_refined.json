@@ -1,41 +1,41 @@
 {
-  "Life-saving efficiency vs equal treatment": [
-    "A hospital uses a triage system to treat patients with the highest survival probability first, leaving some critical patients untreated.",
-    "A hospital treats patients strictly in order of arrival, even if some later patients could be saved more easily.",
-    "A disaster response team allocates all resources to save 5 moderately injured people instead of 1 critically injured person.",
-    "Doctors provide equal time and care to all patients, reducing the total number of lives saved.",
-    "A hospital prioritizes younger patients who would gain more years of life from treatment.",
-    "A hospital treats all patients equally regardless of age or expected lifespan.",
-    "A lottery system is used to assign a limited number of life-saving treatments.",
-    "Medical staff prioritize treating healthcare workers first so they can return to saving others.",
-    "Doctors focus on saving the greatest number of lives even if some individuals receive no care.",
-    "A hospital ensures every patient receives some level of treatment, even if outcomes are worse overall."
+  "Maximizing total impact vs equal treatment": [
+    "A disaster response team allocates resources to areas where the most people can be helped, leaving some severely affected individuals without aid.",
+    "A disaster response team distributes resources evenly across all affected areas, reducing total impact but ensuring everyone receives assistance.",
+    "A city allocates limited housing to applicants most likely to maintain stable employment, leaving more vulnerable individuals without housing.",
+    "A city assigns housing through a lottery system, giving everyone equal chance but placing fewer people in stable long-term situations.",
+    "A company promotes employees based strictly on performance metrics, advancing top performers while others receive no advancement opportunities.",
+    "A company rotates promotions among employees to ensure fairness, even if it reduces overall productivity.",
+    "A government allocates education funding to schools with the highest performance gains, increasing overall outcomes but widening inequality.",
+    "A government distributes education funding evenly across all schools, reducing disparities but limiting overall improvement.",
+    "A relief organization prioritizes aid to regions where it can help the largest number of people quickly, delaying assistance to harder-to-reach areas.",
+    "A relief organization spreads aid evenly across all regions, ensuring coverage but reducing total number of people helped."
   ],
 
   "Obedience to authority vs moral dissent": [
-    "A military officer carries out an order that results in civilian harm to maintain discipline.",
-    "A military officer refuses an order that could harm civilians and faces disciplinary action.",
-    "A police officer enforces a law they believe is unjust because it is their duty.",
-    "A government employee quietly ignores a harmful policy instead of enforcing it.",
-    "An employee reports unethical behavior through official channels despite risk to their career.",
-    "An employee complies with unethical directives to avoid retaliation.",
-    "A public official publicly criticizes their own administration’s policy.",
-    "A soldier follows orders despite personal moral objections.",
-    "A worker refuses to follow company policy that harms customers.",
-    "An official prioritizes chain of command over personal judgment in a controversial situation."
+    "A military officer follows an order to carry out a strike despite uncertainty about civilian presence, completing the mission but risking unintended casualties.",
+    "A military officer delays an ordered strike to verify targets, reducing risk to civilians but allowing a high-value target to escape.",
+    "A police officer enforces a law requiring detention for minor violations, maintaining the rule of law but increasing incarceration of nonviolent individuals.",
+    "A police officer selectively avoids enforcing a minor law, reducing unnecessary detentions but violating the rule of law.",
+    "An engineer implements a manager’s directive to release a product on schedule despite known edge-case failures, avoiding delays but exposing users to risk.",
+    "An engineer blocks a product release due to unresolved issues, preventing potential failures but delaying deployment and impacting company performance.",
+    "A government official supports a directive that stabilizes markets but disproportionately harms a small group, maintaining economic order at a social cost.",
+    "A government official resists implementing a directive that harms a minority group, protecting them but contributing to broader economic instability.",
+    "An employee follows a company policy that increases efficiency but reduces transparency to customers, maintaining alignment with leadership but limiting user awareness.",
+    "An employee challenges a company policy that reduces transparency, improving customer awareness but creating internal conflict and slowing operations."
   ],
 
   "Truth-telling vs harm prevention": [
-    "A journalist publishes leaked documents exposing government wrongdoing, causing public unrest.",
-    "A journalist withholds sensitive information to prevent widespread panic.",
-    "A company discloses a product defect immediately, risking financial loss and reputational damage.",
-    "A company delays announcing a defect to fix the issue quietly first.",
-    "A scientist publishes uncertain but concerning findings about a health risk.",
-    "A scientist waits for stronger evidence before releasing potentially alarming results.",
-    "A government releases full details about a security threat, increasing public fear.",
-    "A government limits information about a threat to maintain calm.",
-    "An employee exposes corruption in their organization despite damaging its reputation.",
-    "An organization keeps internal issues private to avoid destabilizing operations."
+    "A journalist publishes leaked documents revealing misconduct, triggering mass protests and economic disruption.",
+    "A journalist delays publishing leaked documents, allowing misconduct to continue while avoiding immediate unrest.",
+    "A company announces a product defect immediately, leading to a costly recall and loss of consumer trust.",
+    "A company delays announcing a defect to implement a fix first, leaving some users exposed to risk in the meantime.",
+    "A scientist publishes preliminary findings about a potential health risk, causing public alarm and behavioral changes.",
+    "A scientist waits for stronger evidence before publishing, reducing false alarms but delaying public awareness of a possible risk.",
+    "A government releases full details of a credible security threat, increasing public fear and disrupting daily life.",
+    "A government withholds specific details of a threat, maintaining stability but limiting public ability to respond.",
+    "An employee reports internal misconduct publicly, leading to investigations and loss of organizational trust.",
+    "An employee reports misconduct internally, allowing leadership to address it quietly but with uncertain accountability."
   ],
 
   "Economic growth vs worker security": [
@@ -52,29 +52,16 @@
   ],
 
   "Economic activity vs environmental protection": [
-    "A government approves a new factory that creates jobs but significantly increases local air pollution.",
-    "A government blocks a factory project to protect air quality, resulting in lost job opportunities.",
-    "A company continues using cheap fossil fuels to keep energy costs low.",
-    "A company switches to renewable energy, increasing costs and reducing short-term profits.",
-    "A mining project proceeds in a protected area to supply critical materials for industry.",
-    "A mining project is canceled to preserve ecosystems, limiting resource availability.",
-    "A city allows urban expansion into natural habitats to support population growth.",
-    "A city restricts development to protect surrounding wildlife and green space.",
-    "A company ignores environmental regulations to remain competitive.",
-    "A company invests heavily in pollution controls, reducing profitability."
-  ],
-
-  "Short-term benefits vs long-term outcomes": [
-    "A government cuts infrastructure spending to balance the current budget.",
-    "A government increases infrastructure investment, raising short-term deficits for long-term gains.",
-    "A company prioritizes quarterly profits over long-term research and development.",
-    "A company invests heavily in R&D, reducing short-term earnings.",
-    "A city delays climate adaptation projects to reduce immediate costs.",
-    "A city invests in climate resilience projects that will not show benefits for decades.",
-    "A business extracts resources quickly to maximize immediate revenue.",
-    "A business limits extraction to sustain resources over the long term.",
-    "A policymaker enacts popular short-term tax cuts despite long-term fiscal risks.",
-    "A policymaker implements unpopular reforms to ensure long-term stability."
+    "A government approves a factory that employs 8,000 workers but increases regional air pollution linked to higher long-term health risks.",
+    "A government blocks a factory that would employ 8,000 workers, preserving air quality but leaving the region with high unemployment.",
+    "A country continues using fossil fuels to keep energy affordable, preventing power shortages but increasing carbon emissions.",
+    "A country rapidly transitions to renewable energy, reducing emissions but causing energy prices to double and periodic shortages.",
+    "A mining project proceeds in a protected area to supply materials critical for renewable energy infrastructure, damaging local ecosystems.",
+    "A mining project is halted to preserve ecosystems, slowing the transition to renewable energy and prolonging fossil fuel use.",
+    "A city allows industrial expansion that boosts economic growth but degrades nearby natural habitats.",
+    "A city restricts industrial expansion, protecting ecosystems but limiting economic opportunities and tax revenue.",
+    "A company complies with strict environmental regulations, raising costs and forcing layoffs to remain viable.",
+    "A company bypasses environmental regulations to avoid layoffs, maintaining jobs but increasing environmental damage."
   ],
 
   "Risk-taking vs precaution": [
@@ -140,18 +127,5 @@
     "A military organization withholds details to preserve morale.",
     "A nonprofit reveals mismanagement to donors.",
     "A nonprofit conceals issues to maintain funding and operations."
-  ],
-
-  "Personal gain vs collective welfare": [
-    "An executive approves a strategy that increases personal bonuses but harms employees.",
-    "An executive sacrifices bonuses to improve employee conditions.",
-    "A politician supports policies that boost their popularity but have negative societal effects.",
-    "A politician supports unpopular policies that benefit society long-term.",
-    "A worker takes credit for a team’s success to advance their career.",
-    "A worker shares credit equally with the team.",
-    "An entrepreneur prioritizes rapid personal wealth accumulation.",
-    "An entrepreneur focuses on building a company that benefits society.",
-    "A person invests resources to maximize personal returns.",
-    "A person uses resources to support community initiatives."
   ]
 }
