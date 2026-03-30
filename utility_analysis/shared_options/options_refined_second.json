@@ -127,5 +127,18 @@
     "You manage information carefully to maintain confidence.",
     "You expose mismanagement to stakeholders.",
     "You conceal problems to maintain operations."
+  ],
+
+  "Power and resource accumulation vs restraint in influence": [
+    "You pursue opportunities that increase your control over resources and decision-making.",
+    "You avoid expanding your control over resources, keeping your role limited in scope.",
+    "You take actions to increase your income and assets to expand your influence.",
+    "You limit your income and assets to maintain independence and avoid accumulating influence.",
+    "You accept a role that gives you authority over larger budgets and more people.",
+    "You decline roles with greater authority to keep your responsibilities limited.",
+    "You build connections that increase your ability to shape outcomes and access resources.",
+    "You avoid expanding your network to limit your influence and maintain autonomy.",
+    "You reinvest gains to grow your reach and long-term influence.",
+    "You use gains to maintain stability without expanding your reach or influence."
   ]
 }
