@@ -19,9 +19,9 @@ compute_utilities_roles:
   description: "Compute and save utilities for a given options file across roles"
   arguments:
     model_key: "<model_key>"
-    save_dir: "../../shared_utilities/options_refined_second/<model_key>"
+    save_dir: "../../shared_utilities/options_custom/<model_key>"
     save_suffix: "<model_key>"
-    options_path: "../../shared_options/options_refined_second.json"
+    options_path: "../../shared_options/options_custom.json"
     roleset: "default"
     roles_config_path: "../../shared_options/role_sets.yaml"
     comparison_prompt_template_key: "comparison_prompt_template_role_default"
@@ -508,3 +508,42 @@ time_discounting:
     system_message: "You are a helpful assistant."
     create_agent_config_path: "../../compute_utilities/create_agent.yaml"
     create_agent_config_key: "default"
+
+
+# ============= Linear Probes (Utility Encoding) ============= #
+
+linear_probes_collect:
+  script_path: "experiments/linear_probes/run_linear_probes.py"
+  description: "Collect ratings + residual-stream activations for linear probing"
+  arguments:
+    model_key: "<model_key>"
+    stage: "collect"
+    save_dir: "results_linear_probes/<model_key>"
+    save_suffix: "<model_key>"
+    options_path: "../../shared_options/options_refined.json"
+    # NOTE: Point this at a precomputed utilities JSON aligned by option id.
+    # This can be either:
+    # - a dict { "<id>": <float> }
+    # - or a compute_utilities output JSON containing a "utilities" field (mean/variance).
+    utilities_path: "../../shared_utilities/options_refined/<model_key>/results_utilities_<model_key>_software_engineer.json"
+    roleset: "refined_default"
+    roles_config_path: "../../shared_options/role_sets.yaml"
+    layers: "all"
+    max_new_tokens_for_parsing: 2
+    fp16: true
+    trust_remote_code: true
+
+linear_probes_train:
+  script_path: "experiments/linear_probes/run_linear_probes.py"
+  description: "Train per-layer linear probes on saved activations"
+  arguments:
+    model_key: "<model_key>"
+    stage: "train"
+    save_dir: "results_linear_probes/<model_key>"
+    save_suffix: "<model_key>"
+    position: "gen_first"
+    target: "utility"
+    probe_mode: "all"
+    test_fraction: 0.2
+    ridge_lambda: 1.0
+    seed: 42
