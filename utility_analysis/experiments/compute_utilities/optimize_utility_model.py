@@ -46,6 +46,11 @@ def _load_roles_from_roleset(*, roleset: str, roles_config_path: str) -> list[st
         )
     return [r.strip() for r in roles if r and r.strip()]
 
+def _role_with_indefinite_article(role: str) -> str:
+    stripped_role = role.strip()
+    article = "an" if stripped_role[:1].lower() in "aeiou" else "a"
+    return f"{article} {stripped_role}"
+
 async def optimize_utility_model(args):
     """
     Compute utilities for all options in a given options file and save them in a structured directory.
@@ -86,7 +91,12 @@ async def optimize_utility_model(args):
         utility_results = {"roles": roles, "results_by_role": {}}
         for role_name in roles:
             print(f"\nRole: {role_name}")
-            resolved_template = template.replace("{role}", role_name)
+            role_with_article = _role_with_indefinite_article(role_name)
+            resolved_template = (
+                template
+                .replace("{role_with_article}", role_with_article)
+                .replace("{role}", role_name)
+            )
             role_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", role_name).strip("_").lower() or "role"
             role_save_suffix = f"{args.save_suffix}_{role_slug}" if args.save_suffix else role_slug
 
