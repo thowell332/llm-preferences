@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from vllm import LLM, SamplingParams
 
 # Allow imports from utility_analysis/
 sys.path.append("../../")
@@ -241,6 +242,30 @@ def _decode_generation(tokenizer: Any, gen_ids_json: str) -> str:
     return tokenizer.decode(gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
 
 
+def _extract_hidden_states_from_vllm_output(output: Any) -> Optional[np.ndarray]:
+    """Best-effort extraction across vLLM versions."""
+    for attr in ("hidden_states", "prompt_hidden_states"):
+        val = getattr(output, attr, None)
+        if val is not None:
+            arr = np.array(val)
+            if arr.ndim == 3:
+                return arr
+
+    kv = getattr(output, "kv_transfer_params", None)
+    if isinstance(kv, dict):
+        for key in ("hidden_states", "prompt_hidden_states"):
+            if key in kv:
+                arr = np.array(kv[key])
+                if arr.ndim == 3:
+                    return arr
+        for key in ("hidden_states_path", "prompt_hidden_states_path", "hidden_state_path"):
+            if key in kv and isinstance(kv[key], str) and os.path.exists(kv[key]):
+                arr = np.array(np.load(kv[key], allow_pickle=True))
+                if arr.ndim == 3:
+                    return arr
+    return None
+
+
 def _rankdata(x: np.ndarray) -> np.ndarray:
     """
     Average ranks for ties, 1..n.
@@ -310,51 +335,51 @@ def collect(args: argparse.Namespace) -> None:
     models_yaml_path = os.path.abspath(models_yaml_path)
 
     model_path, tokenizer_path = _resolve_model_paths(models_yaml_path, args.model_key)
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
 
-    dtype = torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        trust_remote_code=args.trust_remote_code,
-        torch_dtype=dtype,
-        device_map="auto" if torch.cuda.is_available() else None,
-    )
-    model.eval()
+    from transformers import AutoConfig
 
-    num_layers = getattr(model.config, "num_hidden_layers", None)
+    cfg = AutoConfig.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
+    num_layers = getattr(cfg, "num_hidden_layers", None)
     if num_layers is None:
-        raise ValueError("Could not determine num_hidden_layers from model.config")
+        raise ValueError("Could not determine num_hidden_layers from model config")
     layers = _parse_layers_spec(args.layers, num_layers)
 
     options = _load_options(args.options_path)
     roles = _load_roles(args.roles, args.roleset, args.roles_config_path)
     utilities = _load_utilities(args.utilities_path)
 
-    # Build dataset order (role-major, option-minor).
     metas: List[ExampleMeta] = []
-    prompt_last_list: List[torch.Tensor] = []
-    gen_first_list: List[torch.Tensor] = []
-
-    # We'll store activations as float16 on CPU for size.
-    hidden_dim: Optional[int] = None
-    layer_to_col = {l: i for i, l in enumerate(layers)}
-
-    total = len(roles) * len(options)
-    idx = 0
+    prompts: List[str] = []
     for role in roles:
         for opt in options:
-            idx += 1
             option_id = str(opt["id"])
             if option_id not in utilities:
                 raise ValueError(f"Option id {option_id} missing from utilities.json")
-            prompt = RATING_PROMPT_TEMPLATE.format(role=role, option=opt["description"])
+            prompts.append(RATING_PROMPT_TEMPLATE.format(role=role, option=opt["description"]))
+            metas.append(ExampleMeta(role=role, option_id=option_id, rating=None, utility=float(utilities[option_id])))
 
+    prompt_last_list: List[torch.Tensor] = []
+    gen_first_list: List[torch.Tensor] = []
+    hidden_dim: Optional[int] = None
+
+    if args.backend == "hf":
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        dtype = torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            trust_remote_code=args.trust_remote_code,
+            torch_dtype=dtype,
+            device_map="auto" if torch.cuda.is_available() else None,
+        )
+        model.eval()
+
+        total = len(prompts)
+        for idx, prompt in enumerate(prompts, start=1):
             enc = tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
             input_ids = enc["input_ids"].to(model.device)
             attention_mask = enc["attention_mask"].to(model.device)
-
             gen_ids_json, _, resid_prompt_last, resid_gen_first = _get_residual_stream_at_positions(
                 model=model,
                 input_ids=input_ids,
@@ -362,28 +387,70 @@ def collect(args: argparse.Namespace) -> None:
                 layers=layers,
                 max_new_tokens_for_parsing=args.max_new_tokens_for_parsing,
             )
-            decoded = _decode_generation(tokenizer, gen_ids_json)
-            rating = _parse_rating(decoded)
-
-            # Stack in consistent layer order
-            vecs_prompt = [resid_prompt_last[l].to(dtype=torch.float16) for l in layers]
-            vecs_gen = [resid_gen_first[l].to(dtype=torch.float16) for l in layers]
-            Xp = torch.stack(vecs_prompt, dim=0)  # [L, D]
-            Xg = torch.stack(vecs_gen, dim=0)  # [L, D]
-
+            metas[idx - 1].rating = _parse_rating(_decode_generation(tokenizer, gen_ids_json))
+            Xp = torch.stack([resid_prompt_last[l].to(dtype=torch.float16) for l in layers], dim=0)
+            Xg = torch.stack([resid_gen_first[l].to(dtype=torch.float16) for l in layers], dim=0)
             if hidden_dim is None:
-                hidden_dim = Xp.shape[1]
-            else:
-                if Xp.shape[1] != hidden_dim:
-                    raise RuntimeError("Hidden dim changed across examples (unexpected).")
-
-            metas.append(ExampleMeta(role=role, option_id=option_id, rating=rating, utility=float(utilities[option_id])))
+                hidden_dim = int(Xp.shape[1])
             prompt_last_list.append(Xp.cpu())
             gen_first_list.append(Xg.cpu())
-
             if args.progress_every and (idx % args.progress_every == 0 or idx == total):
-                ok = sum(1 for m in metas[-args.progress_every :] if m.rating is not None)
-                print(f"[collect] {idx}/{total} done (recent parsed ratings: {ok}/{min(args.progress_every, idx)})", flush=True)
+                recent = metas[max(0, idx - args.progress_every) : idx]
+                ok = sum(1 for m in recent if m.rating is not None)
+                print(f"[collect:hf] {idx}/{total} done (recent parsed ratings: {ok}/{len(recent)})", flush=True)
+    elif args.backend == "vllm":
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        llm = LLM(
+            model=model_path,
+            tokenizer=tokenizer_path or model_path,
+            trust_remote_code=args.trust_remote_code,
+            tensor_parallel_size=max(torch.cuda.device_count(), 1),
+            speculative_config={
+                "method": "extract_hidden_states",
+                "num_speculative_tokens": 1,
+            },
+        )
+        sampling_params = SamplingParams(temperature=0.0, max_tokens=args.max_new_tokens_for_parsing)
+
+        total = len(prompts)
+        for idx, prompt in enumerate(prompts, start=1):
+            req_outs = llm.generate([prompt], sampling_params)
+            if not req_outs:
+                raise RuntimeError("vLLM returned no outputs for prompt")
+            out = req_outs[0]
+            hs = _extract_hidden_states_from_vllm_output(out)
+            if hs is None:
+                raise RuntimeError(
+                    "vLLM hidden states unavailable. This runtime likely has an older vLLM version. "
+                    "Upgrade vLLM or use --backend hf with a non-quantized model."
+                )
+            prompt_token_ids = getattr(out, "prompt_token_ids", None)
+            if prompt_token_ids is None:
+                prompt_token_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
+            prompt_len = len(prompt_token_ids)
+            prompt_last_idx = prompt_len - 1
+            gen_first_idx = prompt_len
+            if hs.shape[1] <= gen_first_idx:
+                raise RuntimeError(
+                    f"Hidden states sequence too short ({hs.shape[1]}) for first generated token index {gen_first_idx}"
+                )
+            Xp = torch.tensor(np.stack([hs[l, prompt_last_idx, :] for l in layers], axis=0), dtype=torch.float16)
+            Xg = torch.tensor(np.stack([hs[l, gen_first_idx, :] for l in layers], axis=0), dtype=torch.float16)
+            if hidden_dim is None:
+                hidden_dim = int(Xp.shape[1])
+            prompt_last_list.append(Xp.cpu())
+            gen_first_list.append(Xg.cpu())
+            text = out.outputs[0].text if out.outputs else ""
+            metas[idx - 1].rating = _parse_rating(text)
+            if args.progress_every and (idx % args.progress_every == 0 or idx == total):
+                recent = metas[max(0, idx - args.progress_every) : idx]
+                ok = sum(1 for m in recent if m.rating is not None)
+                print(f"[collect:vllm] {idx}/{total} done (recent parsed ratings: {ok}/{len(recent)})", flush=True)
+    else:
+        raise ValueError(f"Unknown backend: {args.backend}")
 
     if hidden_dim is None:
         raise RuntimeError("No examples collected.")
@@ -419,6 +486,7 @@ def collect(args: argparse.Namespace) -> None:
     run_meta = {
         "experiment": "linear_probes",
         "prompt_template_version": "v1",
+        "backend": args.backend,
         "model_key": args.model_key,
         "model_path": model_path,
         "tokenizer_path": tokenizer_path,
@@ -571,6 +639,7 @@ def main() -> None:
     parser.add_argument("--save_dir", default="results/<model_key>", help="Directory to save outputs")
     parser.add_argument("--save_suffix", type=none_or_str, default=None, help="Custom suffix for saved files")
     parser.add_argument("--stage", choices=["collect", "train"], required=True, help="Which stage to run.")
+    parser.add_argument("--backend", choices=["hf", "vllm"], default="hf", help="Model backend for collection.")
 
     # Collect args
     parser.add_argument("--options_path", default=None, help="Path to options.json (list or hierarchical dict)")

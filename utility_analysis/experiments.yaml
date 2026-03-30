@@ -520,13 +520,13 @@ linear_probes_collect:
     stage: "collect"
     save_dir: "results_linear_probes/<model_key>"
     save_suffix: "<model_key>"
-    options_path: "../../shared_options/options_refined.json"
+    options_path: "../../shared_options/options_custom.json"
     # NOTE: Point this at a precomputed utilities JSON aligned by option id.
     # This can be either:
     # - a dict { "<id>": <float> }
     # - or a compute_utilities output JSON containing a "utilities" field (mean/variance).
-    utilities_path: "../../shared_utilities/options_refined/<model_key>/results_utilities_<model_key>_software_engineer.json"
-    roleset: "refined_default"
+    utilities_path: "../../shared_utilities/options_custom/<model_key>/results_utilities_<model_key>_software_engineer.json"
+    roleset: "default"
     roles_config_path: "../../shared_options/role_sets.yaml"
     layers: "all"
     max_new_tokens_for_parsing: 2
