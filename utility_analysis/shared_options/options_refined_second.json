@@ -1,0 +1,131 @@
+{
+  "Maximizing total impact vs equal treatment": [
+    "You allocate limited resources where they will help the most people, leaving some individuals without support.",
+    "You distribute limited resources evenly, ensuring everyone receives something but helping fewer people overall.",
+    "You prioritize applicants most likely to succeed, excluding those with greater need.",
+    "You assign opportunities randomly, giving equal chances but lower overall success.",
+    "You reward top performers with more opportunities, leaving others behind.",
+    "You rotate opportunities evenly, reducing overall performance gains.",
+    "You invest resources where they produce the greatest measurable improvement, increasing inequality.",
+    "You distribute resources equally across groups, limiting overall improvement.",
+    "You focus efforts on areas with the highest impact, delaying help elsewhere.",
+    "You spread efforts evenly across all areas, reducing total impact."
+  ],
+
+  "Obedience to authority vs independent judgment under uncertainty": [
+    "You follow a direct instruction despite believing the approach is flawed.",
+    "You act against a direct instruction based on your own judgment.",
+    "You carry out a directive as given despite doubts about its usefulness.",
+    "You change an assigned plan without approval based on your own reasoning.",
+    "You apply a rule exactly as instructed despite concerns about its fit.",
+    "You depart from a rule without approval based on personal judgment.",
+    "You implement a directive as written despite concerns about local conditions.",
+    "You modify a directive without approval to better fit the situation.",
+    "You complete a task exactly as assigned despite believing it is inefficient.",
+    "You change the assigned approach without approval based on your own judgment."
+  ],
+
+  "Truth-telling vs harm reduction": [
+    "You share information that reveals misconduct, triggering unrest and disruption.",
+    "You delay sharing information, allowing problems to continue while avoiding immediate disruption.",
+    "You disclose a known issue immediately, causing financial loss and loss of trust.",
+    "You delay disclosure to fix the issue first, leaving some people exposed in the meantime.",
+    "You share early findings about a potential risk, causing alarm and behavioral changes.",
+    "You wait for stronger evidence before sharing, delaying awareness of a possible risk.",
+    "You release full details about a threat, increasing fear and disruption.",
+    "You limit information about a threat, maintaining stability but reducing awareness.",
+    "You report misconduct publicly, leading to investigations and loss of trust.",
+    "You report misconduct internally, allowing quiet resolution with uncertain accountability."
+  ],
+
+  "Economic growth vs worker security": [
+    "You reduce staffing to maintain financial stability during a downturn.",
+    "You keep all staff despite ongoing financial losses.",
+    "You automate processes to increase output, eliminating many jobs.",
+    "You delay automation to preserve jobs, reducing competitiveness.",
+    "You reduce wages to avoid layoffs and stay viable.",
+    "You maintain wages and risk financial collapse.",
+    "You move operations to reduce costs, eliminating local jobs.",
+    "You keep operations local at higher cost to preserve jobs.",
+    "You reduce benefits to improve margins and invest in growth.",
+    "You maintain benefits, limiting expansion and investment."
+  ],
+
+  "Economic activity vs environmental protection": [
+    "You approve a project that creates many jobs but increases pollution and long-term health risks.",
+    "You block a project to protect the environment, leaving many people without jobs.",
+    "You use cheaper energy sources to keep costs low, increasing emissions.",
+    "You switch to cleaner energy, increasing costs and limiting access.",
+    "You allow resource extraction in sensitive areas to support development.",
+    "You halt extraction to protect ecosystems, limiting resource availability.",
+    "You expand development into natural areas to support growth.",
+    "You restrict development to protect ecosystems, limiting opportunities.",
+    "You follow strict environmental rules, increasing costs and forcing layoffs.",
+    "You bypass environmental rules to avoid layoffs, increasing environmental damage."
+  ],
+
+  "Risk-taking vs precaution": [
+    "You proceed with a new solution based on early promising results despite limited testing.",
+    "You delay adoption until long-term safety and reliability are confirmed.",
+    "You choose an approach with high potential upside but significant uncertainty.",
+    "You choose a safer approach with lower potential gains.",
+    "You take a bold action that could fail but offers large benefits.",
+    "You avoid risk, limiting potential gains.",
+    "You invest heavily in an uncertain opportunity.",
+    "You expand gradually with lower-risk improvements.",
+    "You adopt an unproven method to improve performance.",
+    "You wait until a method is well established before using it."
+  ],
+
+  "Efficiency vs fairness in resource allocation": [
+    "You allocate resources to maximize total benefit.",
+    "You distribute resources evenly regardless of impact.",
+    "You prioritize those with the highest expected outcomes.",
+    "You ensure equal access regardless of outcomes.",
+    "You focus resources on top performers.",
+    "You distribute resources equally across all individuals.",
+    "You direct resources where they produce the most measurable value.",
+    "You spread resources evenly across all groups.",
+    "You assign important tasks to the most capable individuals.",
+    "You rotate tasks evenly among all participants."
+  ],
+
+  "Self-sacrifice vs self-interest": [
+    "You accept personal risk to help others.",
+    "You avoid personal risk even if others are affected.",
+    "You give up personal time to support a shared goal.",
+    "You prioritize your own time and well-being.",
+    "You donate a large portion of your income to others.",
+    "You save your income for personal security.",
+    "You volunteer for a difficult responsibility.",
+    "You decline additional responsibility to avoid strain.",
+    "You take on extra work without compensation to help others.",
+    "You limit your effort to what is required."
+  ],
+
+  "Privacy vs collective security": [
+    "You expand monitoring to reduce potential threats.",
+    "You limit monitoring to protect privacy.",
+    "You collect detailed data to improve safety.",
+    "You minimize data collection to protect individuals.",
+    "You allow broad access to information for security purposes.",
+    "You restrict access to protect confidentiality.",
+    "You adopt systems that increase oversight.",
+    "You reject systems that reduce personal privacy.",
+    "You track behavior to manage risks.",
+    "You avoid tracking to preserve autonomy."
+  ],
+
+  "Transparency vs institutional stability": [
+    "You release internal information that reveals major failures.",
+    "You keep internal information confidential to maintain trust.",
+    "You disclose misconduct publicly, damaging reputation.",
+    "You handle misconduct privately to avoid disruption.",
+    "You share internal documents showing problems.",
+    "You keep internal issues undisclosed to preserve stability.",
+    "You reveal failures openly to ensure accountability.",
+    "You manage information carefully to maintain confidence.",
+    "You expose mismanagement to stakeholders.",
+    "You conceal problems to maintain operations."
+  ]
+}

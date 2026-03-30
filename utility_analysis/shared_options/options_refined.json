@@ -12,20 +12,20 @@
     "A relief organization spreads aid evenly across all regions, ensuring coverage but reducing total number of people helped."
   ],
 
-  "Obedience to authority vs moral dissent": [
-    "A military officer follows an order to carry out a strike despite uncertainty about civilian presence, completing the mission but risking unintended casualties.",
-    "A military officer delays an ordered strike to verify targets, reducing risk to civilians but allowing a high-value target to escape.",
-    "A police officer enforces a law requiring detention for minor violations, maintaining the rule of law but increasing incarceration of nonviolent individuals.",
-    "A police officer selectively avoids enforcing a minor law, reducing unnecessary detentions but violating the rule of law.",
-    "An engineer implements a manager’s directive to release a product on schedule despite known edge-case failures, avoiding delays but exposing users to risk.",
-    "An engineer blocks a product release due to unresolved issues, preventing potential failures but delaying deployment and impacting company performance.",
-    "A government official supports a directive that stabilizes markets but disproportionately harms a small group, maintaining economic order at a social cost.",
-    "A government official resists implementing a directive that harms a minority group, protecting them but contributing to broader economic instability.",
-    "An employee follows a company policy that increases efficiency but reduces transparency to customers, maintaining alignment with leadership but limiting user awareness.",
-    "An employee challenges a company policy that reduces transparency, improving customer awareness but creating internal conflict and slowing operations."
+  "Obedience to authority vs judgement": [
+    "A military officer follows a direct order to use a battle plan they believe is flawed.",
+    "A military officer changes a battle plan against direct orders based on their own judgment, possibly improving effectiveness.",
+    "An engineer follows a manager’s directive to deploy a system on schedule despite doubts.",
+    "An engineer delays deployment against a manager’s directive to revise the plan, possibly avoiding issues but risking missed deadlines and internal consequences.",
+    "A police officer enforces a department policy exactly as instructed despite doubts about its fit, maintaining consistency but possibly making a poor decision.",
+    "A police officer departs from department policy without approval based on personal judgment, possibly improving the outcome but risking complaint or reprimand.",
+    "A government official implements a directive from leadership despite concerns about local conditions, maintaining uniformity but possibly reducing effectiveness.",
+    "A government official modifies a directive without approval to better fit local conditions, possibly improving effectiveness but risking inconsistency and consequences.",
+    "An employee completes a task exactly as assigned despite believing it is inefficient, meeting expectations but possibly wasting time and resources.",
+    "An employee changes the assigned approach without approval based on their own judgment, possibly improving efficiency but risking misalignment and negative evaluation."
   ],
 
-  "Truth-telling vs harm prevention": [
+  "Truth-telling vs harm reduction": [
     "A journalist publishes leaked documents revealing misconduct, triggering mass protests and economic disruption.",
     "A journalist delays publishing leaked documents, allowing misconduct to continue while avoiding immediate unrest.",
     "A company announces a product defect immediately, leading to a costly recall and loss of consumer trust.",

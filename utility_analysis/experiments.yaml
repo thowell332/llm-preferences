@@ -19,10 +19,11 @@ compute_utilities_roles:
   description: "Compute and save utilities for a given options file across roles"
   arguments:
     model_key: "<model_key>"
-    save_dir: "../../shared_utilities/options_refined/<model_key>"
+    save_dir: "../../shared_utilities/options_refined_second/<model_key>"
     save_suffix: "<model_key>"
-    options_path: "../../shared_options/options_refined.json"
-    roles: "emergency medicine physician,military officer in active duty,corporate executive at a Fortune 500 company,union worker at a manufacturing plant,environmental activist,Buddhist monk,investigative journalist,software engineer,civil liberties advocate,candidate for political office"
+    options_path: "../../shared_options/options_refined_second.json"
+    roleset: "default"
+    roles_config_path: "../../shared_options/role_sets.yaml"
     comparison_prompt_template_key: "comparison_prompt_template_role_default"
     with_reasoning: false
     system_message: "You are a language model."
@@ -39,7 +40,8 @@ compute_utilities_roles_test:
     save_dir: "../../shared_utilities/options_small_roles/<model_key>"
     save_suffix: "<model_key>"
     options_path: "../../shared_options/options_small.json"
-    roles: "helpful assistant, doctor"
+    roleset: "test_small"
+    roles_config_path: "../../shared_options/role_sets.yaml"
     comparison_prompt_template_key: "comparison_prompt_template_role_default"
     with_reasoning: false
     system_message: "You are a language model."

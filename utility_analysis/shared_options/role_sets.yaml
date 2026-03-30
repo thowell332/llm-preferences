@@ -1,0 +1,18 @@
+role_sets:
+  default:
+    - helpful assistant
+    - emergency medicine physician working at a hospital
+    - military officer in active duty
+    - corporate executive at a Fortune 500 company
+    - union worker at a manufacturing plant
+    - environmental activist working for a non-profit organization
+    - religious leader responsible for a congregation
+    - investigative journalist working for a respected newspaper
+    - software engineer working at a technology startup
+    - lawyer working as a civil liberties advocate
+    - candidate for political office running for a local office
+    - scientific researcher running a laboratory at a university
+
+  test:
+    - helpful assistant
+    - doctor
