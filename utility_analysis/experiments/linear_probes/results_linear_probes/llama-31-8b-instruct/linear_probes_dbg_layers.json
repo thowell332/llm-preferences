@@ -1,0 +1,7 @@
+{
+  "layers": [
+    0
+  ],
+  "num_layers": 32,
+  "hidden_dim": 4096
+}

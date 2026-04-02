@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -183,37 +184,92 @@ def _get_residual_stream_at_positions(
       - residuals_prompt_last[layer] -> [hidden_dim] (prompt last token)
       - residuals_gen_first[layer] -> [hidden_dim] (first generated token)
     """
+    # We only need a small subset of layers, so avoid `output_hidden_states=True` which
+    # forces Transformers to materialize/store hidden states for *all* layers.
+    # Instead, capture layer outputs with forward hooks and then slice the token position.
+    def _get_transformer_blocks(m: AutoModelForCausalLM) -> Sequence[Any]:
+        # LlamaForCausalLM: m.model.layers
+        if hasattr(m, "model") and hasattr(m.model, "layers"):
+            return m.model.layers
+        # Some other architectures may use different attribute names; fall back if possible.
+        if hasattr(m, "transformer") and hasattr(m.transformer, "h"):
+            return m.transformer.h
+        raise ValueError(
+            "Could not locate transformer block modules on the model. "
+            "Expected something like model.model.layers (Llama) or model.transformer.h."
+        )
+
+    blocks = _get_transformer_blocks(model)
+    max_requested_layer = max(layers) if len(layers) > 0 else -1
+    if max_requested_layer >= len(blocks):
+        raise ValueError(f"Requested layer id {max_requested_layer}, but model has only {len(blocks)} layers.")
+
+    layers_set = list(layers)
+
     # 1) Forward on prompt to get residual stream at last prompt token.
+    prompt_last_index = input_ids.shape[1] - 1
+    residuals_prompt_last: Dict[int, torch.Tensor] = {}
+    hooks: List[Any] = []
+
+    for l in layers_set:
+        def _hook(mod: Any, _inp: Any, out: Any, layer_idx: int = l) -> None:
+            # Llama decoder layers often return (hidden_states, ...) but we only need hidden_states.
+            hs = out[0] if isinstance(out, (tuple, list)) else out
+            if torch.is_tensor(hs):
+                # Keep on-device for now; we'll move to CPU once the forward pass completes.
+                residuals_prompt_last[layer_idx] = hs[0, prompt_last_index, :].detach()
+
+        hooks.append(blocks[l].register_forward_hook(_hook))
+
     out_prompt = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
         use_cache=False,
-        output_hidden_states=True,
+        output_hidden_states=False,
         return_dict=True,
+        # Avoid computing logits for all tokens; we only need the next-token distribution.
+        num_logits_to_keep=1,
     )
-    hidden_states_prompt = out_prompt.hidden_states  # len = num_layers + 1
-    prompt_last_index = input_ids.shape[1] - 1
-    residuals_prompt_last: Dict[int, torch.Tensor] = {}
-    for l in layers:
-        residuals_prompt_last[l] = hidden_states_prompt[l + 1][0, prompt_last_index, :].detach().cpu()
+
+    for h in hooks:
+        h.remove()
+
+    missing = [l for l in layers_set if l not in residuals_prompt_last]
+    if missing:
+        raise RuntimeError(f"Failed to capture residuals for layers: {missing}")
 
     # 2) Greedy-generate one token (for activation at first generated token).
     next_token_id = torch.argmax(out_prompt.logits[:, -1, :], dim=-1, keepdim=True)  # [1,1]
     input_ids_1 = torch.cat([input_ids, next_token_id], dim=1)
     attention_mask_1 = torch.cat([attention_mask, torch.ones_like(next_token_id)], dim=1)
 
+    gen_first_index = input_ids_1.shape[1] - 1
+    residuals_gen_first: Dict[int, torch.Tensor] = {}
+    hooks = []
+    for l in layers_set:
+        def _hook(mod: Any, _inp: Any, out: Any, layer_idx: int = l) -> None:
+            hs = out[0] if isinstance(out, (tuple, list)) else out
+            if torch.is_tensor(hs):
+                residuals_gen_first[layer_idx] = hs[0, gen_first_index, :].detach()
+
+        hooks.append(blocks[l].register_forward_hook(_hook))
+
     out_1 = model(
         input_ids=input_ids_1,
         attention_mask=attention_mask_1,
         use_cache=False,
-        output_hidden_states=True,
+        output_hidden_states=False,
         return_dict=True,
+        # Only need last-token logits for greedy argmax.
+        num_logits_to_keep=1,
     )
-    hidden_states_1 = out_1.hidden_states
-    gen_first_index = input_ids_1.shape[1] - 1
-    residuals_gen_first: Dict[int, torch.Tensor] = {}
-    for l in layers:
-        residuals_gen_first[l] = hidden_states_1[l + 1][0, gen_first_index, :].detach().cpu()
+
+    for h in hooks:
+        h.remove()
+
+    missing = [l for l in layers_set if l not in residuals_gen_first]
+    if missing:
+        raise RuntimeError(f"Failed to capture residuals for layers on gen_first: {missing}")
 
     # 3) Optionally generate a couple more tokens for rating parsing only.
     gen_ids = [int(next_token_id.item())]
@@ -226,13 +282,13 @@ def _get_residual_stream_at_positions(
             use_cache=False,
             output_hidden_states=False,
             return_dict=True,
+            num_logits_to_keep=1,
         )
         nxt = torch.argmax(out_k.logits[:, -1, :], dim=-1, keepdim=True)
         gen_ids.append(int(nxt.item()))
         cur_input_ids = torch.cat([cur_input_ids, nxt], dim=1)
         cur_attention_mask = torch.cat([cur_attention_mask, torch.ones_like(nxt)], dim=1)
 
-    decoded = model.config._name_or_path  # placeholder if tokenizer decode fails unexpectedly
     # Caller will pass tokenizer to decode; keep ids here instead.
     return json.dumps(gen_ids), None, residuals_prompt_last, residuals_gen_first
 
@@ -352,11 +408,15 @@ def collect(args: argparse.Namespace) -> None:
     prompts: List[str] = []
     for role in roles:
         for opt in options:
+            if args.max_examples and len(prompts) >= args.max_examples:
+                break
             option_id = str(opt["id"])
             if option_id not in utilities:
                 raise ValueError(f"Option id {option_id} missing from utilities.json")
             prompts.append(RATING_PROMPT_TEMPLATE.format(role=role, option=opt["description"]))
             metas.append(ExampleMeta(role=role, option_id=option_id, rating=None, utility=float(utilities[option_id])))
+        if args.max_examples and len(prompts) >= args.max_examples:
+            break
 
     prompt_last_list: List[torch.Tensor] = []
     gen_first_list: List[torch.Tensor] = []
@@ -367,19 +427,45 @@ def collect(args: argparse.Namespace) -> None:
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
         dtype = torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            trust_remote_code=args.trust_remote_code,
-            torch_dtype=dtype,
-            device_map="auto" if torch.cuda.is_available() else None,
-        )
+
+        # Match the previous, simpler behavior: let Accelerate choose an offload plan.
+        device_map = None
+        if torch.cuda.is_available() and not getattr(args, "force_cpu", False):
+            device_map = "auto"
+
+        from_pretrained_kwargs: Dict[str, Any] = {
+            "trust_remote_code": args.trust_remote_code,
+            "torch_dtype": dtype,
+            "device_map": device_map,
+            "low_cpu_mem_usage": True,
+        }
+        if args.attn_implementation:
+            from_pretrained_kwargs["attn_implementation"] = args.attn_implementation
+
+        model = AutoModelForCausalLM.from_pretrained(model_path, **from_pretrained_kwargs)
         model.eval()
+        print(
+            f"[collect:hf] model loaded. device_map={device_map}",
+            flush=True,
+        )
 
         total = len(prompts)
         for idx, prompt in enumerate(prompts, start=1):
-            enc = tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
+            # Truncate to avoid blowing up attention + logits on very long option text.
+            enc = tokenizer(
+                prompt,
+                return_tensors="pt",
+                add_special_tokens=True,
+                truncation=True,
+                max_length=args.max_model_len,
+            )
             input_ids = enc["input_ids"].to(model.device)
             attention_mask = enc["attention_mask"].to(model.device)
+            if idx == 1:
+                print(
+                    f"[collect:hf] starting first forward: input_len={int(input_ids.shape[1])} layers={layers}",
+                    flush=True,
+                )
             gen_ids_json, _, resid_prompt_last, resid_gen_first = _get_residual_stream_at_positions(
                 model=model,
                 input_ids=input_ids,
@@ -398,21 +484,50 @@ def collect(args: argparse.Namespace) -> None:
                 recent = metas[max(0, idx - args.progress_every) : idx]
                 ok = sum(1 for m in recent if m.rating is not None)
                 print(f"[collect:hf] {idx}/{total} done (recent parsed ratings: {ok}/{len(recent)})", flush=True)
+
+            if args.max_examples and idx >= args.max_examples:
+                print(f"[collect:hf] debug: stopping after max_examples={args.max_examples}", flush=True)
+                break
     elif args.backend == "vllm":
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        llm = LLM(
-            model=model_path,
-            tokenizer=tokenizer_path or model_path,
-            trust_remote_code=args.trust_remote_code,
-            tensor_parallel_size=max(torch.cuda.device_count(), 1),
-            speculative_config={
-                "method": "extract_hidden_states",
-                "num_speculative_tokens": 1,
-            },
-        )
+        try:
+            llm = LLM(
+                model=model_path,
+                tokenizer=tokenizer_path or model_path,
+                trust_remote_code=args.trust_remote_code,
+                tensor_parallel_size=max(torch.cuda.device_count(), 1),
+                gpu_memory_utilization=args.gpu_memory_utilization,
+                max_model_len=args.max_model_len,
+                speculative_config={
+                    "method": "extract_hidden_states",
+                    "num_speculative_tokens": 1,
+                },
+            )
+        except Exception as e:
+            msg = str(e)
+            if "extract_hidden_states" in msg or "SpeculativeConfig" in msg or "speculative_config" in msg:
+                raise RuntimeError(
+                    "Failed to initialize vLLM hidden-state extraction backend. "
+                    "Your installed vLLM likely does not support "
+                    "speculative_config.method='extract_hidden_states'. "
+                    "Upgrade vLLM (e.g. pip install --upgrade 'vllm>=0.18.0'), restart runtime, and rerun. "
+                    f"Original error:\n{e}"
+                ) from e
+            if "Free memory on device" in msg or "gpu_memory_utilization" in msg or "desired GPU memory utilization" in msg:
+                raise RuntimeError(
+                    "vLLM failed to start due to insufficient GPU memory headroom. "
+                    "Try reducing --gpu_memory_utilization (e.g. 0.7 or 0.6) and/or --max_model_len (e.g. 1024/2048), "
+                    "and close other GPU processes. "
+                    f"Original error:\n{e}"
+                ) from e
+            raise RuntimeError(
+                "Failed to initialize vLLM hidden-state extraction backend. "
+                "Original error:\n"
+                f"{e}"
+            ) from e
         sampling_params = SamplingParams(temperature=0.0, max_tokens=args.max_new_tokens_for_parsing)
 
         total = len(prompts)
@@ -495,6 +610,8 @@ def collect(args: argparse.Namespace) -> None:
         "roles": roles,
         "layers": layers,
         "max_new_tokens_for_parsing": args.max_new_tokens_for_parsing,
+        "gpu_memory_utilization": args.gpu_memory_utilization if args.backend == "vllm" else None,
+        "max_model_len": args.max_model_len if args.backend == "vllm" else None,
         "dtype": "fp16" if args.fp16 else ("bf16" if args.bf16 else "fp32"),
     }
     with open(out_prefix + "_run_metadata.json", "w") as f:
@@ -654,7 +771,41 @@ def main() -> None:
         default=2,
         help="Generate up to this many tokens to parse rating (activations still taken at first generated token).",
     )
+    parser.add_argument(
+        "--gpu_memory_utilization",
+        type=float,
+        default=0.75,
+        help="vLLM gpu_memory_utilization setting for --backend vllm (lower to reduce KV cache allocation).",
+    )
+    parser.add_argument(
+        "--max_model_len",
+        type=int,
+        default=1024,
+        help="vLLM max_model_len for --backend vllm (controls KV cache size).",
+    )
     parser.add_argument("--progress_every", type=int, default=100, help="Print progress every N examples (0 disables).")
+    parser.add_argument(
+        "--max_examples",
+        type=int,
+        default=0,
+        help="If > 0, stop after this many prompts (for fast debugging).",
+    )
+    parser.add_argument(
+        "--force_cpu",
+        action="store_true",
+        help="Force loading/running on CPU to avoid CUDA errors (slow).",
+    )
+    parser.add_argument(
+        "--cuda_launch_blocking",
+        action="store_true",
+        help="Set CUDA_LAUNCH_BLOCKING=1 to make CUDA stack traces synchronous (slower).",
+    )
+    parser.add_argument(
+        "--attn_implementation",
+        type=none_or_str,
+        default=None,
+        help="Transformers attention implementation override (e.g. eager, sdpa).",
+    )
     parser.add_argument("--trust_remote_code", action="store_true", help="Trust remote code for tokenizer/model.")
     parser.add_argument("--fp16", action="store_true", help="Load model in float16 (recommended).")
     parser.add_argument("--bf16", action="store_true", help="Load model in bfloat16.")
@@ -678,6 +829,9 @@ def main() -> None:
     parser.add_argument("--ridge_lambda", type=float, default=1.0, help="Ridge regularization strength.")
 
     args = parser.parse_args()
+
+    if args.cuda_launch_blocking:
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
     # expand <model_key> templating used by experiments.yaml runner
     if isinstance(args.save_dir, str):

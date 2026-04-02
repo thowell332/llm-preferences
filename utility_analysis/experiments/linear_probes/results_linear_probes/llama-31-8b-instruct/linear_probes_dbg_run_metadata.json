@@ -1,0 +1,20 @@
+{
+  "experiment": "linear_probes",
+  "prompt_template_version": "v1",
+  "backend": "hf",
+  "model_key": "llama-31-8b-instruct",
+  "model_path": "/home/thowell332/tufts/value-driven-behavior/models/llama-31-8b-instruct",
+  "tokenizer_path": null,
+  "options_path": "/home/thowell332/tufts/value-driven-behavior/utility_analysis/shared_options/options_custom.json",
+  "utilities_path": "/home/thowell332/tufts/value-driven-behavior/utility_analysis/shared_utilities/options_custom/llama-31-8b-instruct/results_utilities_llama-31-8b-instruct_helpful_assistant.json",
+  "roles": [
+    "helpful assistant"
+  ],
+  "layers": [
+    0
+  ],
+  "max_new_tokens_for_parsing": 1,
+  "gpu_memory_utilization": null,
+  "max_model_len": null,
+  "dtype": "fp32"
+}
