@@ -2,7 +2,7 @@ model_key: llama-31-8b-instruct
 stage: collect
 backend: hf
 save_dir: results_linear_probes/llama-31-8b-instruct
-save_suffix: llama-31-8b-instruct_pilot_helpful assistant
+save_suffix: llama-31-8b-instruct_pilot_helpful_assistant
 options_path: ../../shared_options/options_custom.json
 utilities_path: ../../shared_utilities/options_custom/llama-31-8b-instruct/results_utilities_llama-31-8b-instruct_helpful_assistant.json
 roles: helpful assistant
@@ -10,8 +10,9 @@ layers: 0,3,7,10,14,17,21,24,28,31
 max_new_tokens_for_parsing: 2
 fp16: true
 trust_remote_code: true
-max_examples: 1
+max_examples: 20
 cuda_launch_blocking: true
 attn_implementation: eager
 max_model_len: 256
-force_cpu: true
+force_cpu: false
+hf_bnb_8bit: true

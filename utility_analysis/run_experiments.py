@@ -178,10 +178,27 @@ def run_locally(
             cmd.extend(config_args)
         if additional_args:
             cmd.extend(additional_args)
-        
-        process = subprocess.run(cmd)
-        if process.returncode != 0:
-            raise RuntimeError(f"Local execution failed for {script_name}")
+
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            # Child stderr is not connected to the parent tty; surface it for debugging.
+            tail = 12000
+            out = (proc.stdout or "")[-tail:]
+            err = (proc.stderr or "")[-tail:]
+            hint = ""
+            # SIGKILL: Linux subprocess often reports -9; some environments use 128+9 = 137.
+            if proc.returncode in (-9, 137):
+                hint = (
+                    "\nHint: exit -9 / 137 usually means SIGKILL (OOM killer or manual kill). "
+                    "linear_probes HF collect with CPU-staged 8B fp16 needs ~18+ GiB RAM; raise WSL memory, use "
+                    "--hf_bnb_8bit (bitsandbytes), or run from non-OneDrive paths.\n"
+                )
+            raise RuntimeError(
+                f"Local execution failed for {script_name} (exit {proc.returncode}).\n"
+                f"--- stdout (last {tail} chars) ---\n{out}\n"
+                f"--- stderr (last {tail} chars) ---\n{err}"
+                f"{hint}"
+            )
     finally:
         os.chdir(original_dir)
 

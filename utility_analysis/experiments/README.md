@@ -2,7 +2,20 @@ This folder contains experiment scripts referenced by `utility_analysis/experime
 
 ## Linear probes (`linear_probes`)
 
-`experiments/linear_probes/run_linear_probes.py` supports two stages:
+Entry point: `experiments/linear_probes/run_linear_probes.py` (thin wrapper). Implementation modules live in `experiments/linear_probes/lp/`:
+
+| Module | Role |
+|--------|------|
+| `lp/cli.py` | Argument parser and `main()` |
+| `lp/data.py` | Options/utilities/roles, `models.yaml`, prompts, `ExampleMeta` |
+| `lp/activations.py` | HF hooks + vLLM hidden-state extraction helpers |
+| `lp/hf_loader.py` | Hugging Face `from_pretrained` / device-map / bitsandbytes |
+| `lp/collect.py` | Collect stage orchestration (`collect_hf` / `collect_vllm`) |
+| `lp/train.py` | Train stage (ridge probes) |
+| `lp/metrics.py` | Ridge / Spearman / R² |
+| `lp/debug.py` | RSS logging, path warnings |
+
+The script supports two stages:
 
 - `--stage collect`: for each `(role, option)` prompt, greedily generates the rating and stores:
   - the parsed rating (1–10 when parsable)
@@ -19,3 +32,5 @@ This folder contains experiment scripts referenced by `utility_analysis/experime
 - `linear_probes_train`
 
 You will usually run `collect` first, then `train`, pointing `utilities_path` at a precomputed utilities JSON aligned by option id.
+
+**WSL / limited RAM:** the default HF path stages the full fp16 weights on CPU (~18+ GiB RAM) before moving to GPU; the process may be **SIGKILL’d (exit -9)** while loading shards. Use **`--hf_bnb_8bit`** (requires `bitsandbytes` in `requirements.txt`) for 8-bit GPU loading, or raise WSL memory and keep full-precision staging.
