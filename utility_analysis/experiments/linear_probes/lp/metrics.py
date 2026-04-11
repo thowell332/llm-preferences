@@ -39,6 +39,32 @@ def r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return 1.0 - ss_res / ss_tot
 
 
+def pairwise_preference_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    On the test set, among unordered pairs (i, j) with **strict** ground-truth preference
+    (``y_true[i] != y_true[j]``), the fraction where the model agrees on the direction:
+    ``sign(y_pred[i] - y_pred[j]) == sign(y_true[i] - y_true[j])``.
+
+    Pairs with a true difference but ``y_pred[i] == y_pred[j]`` count as incorrect.
+    Pairs with **no** true difference are excluded (no defined preference).
+    """
+    y_true = np.asarray(y_true, dtype=np.float64).ravel()
+    y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
+    n = len(y_true)
+    if n < 2:
+        return float("nan")
+    i, j = np.triu_indices(n, k=1)
+    dt = y_true[i] - y_true[j]
+    dp = y_pred[i] - y_pred[j]
+    mask = dt != 0
+    if not np.any(mask):
+        return float("nan")
+    dt = dt[mask]
+    dp = dp[mask]
+    agree = ((dt > 0) & (dp > 0)) | ((dt < 0) & (dp < 0))
+    return float(agree.mean())
+
+
 def ridge_fit_closed_form(X: np.ndarray, y: np.ndarray, ridge_lambda: float) -> tuple[np.ndarray, float]:
     X = X.astype(np.float64, copy=False)
     y = y.astype(np.float64, copy=False)

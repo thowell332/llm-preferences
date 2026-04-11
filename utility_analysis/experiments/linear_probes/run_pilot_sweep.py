@@ -14,9 +14,14 @@ Example (activate the repo venv first: ``source venv/bin/activate`` from the rep
   cd utility_analysis/experiments/linear_probes
   python run_pilot_sweep.py --model-key llama-31-8b-instruct
 
-Or:
+Regenerate the plot from an existing probe JSON (no collect/train):
 
-  python /path/to/utility_analysis/experiments/linear_probes/run_pilot_sweep.py --model-key llama-31-8b-instruct
+  python run_pilot_sweep.py --model-key llama-31-8b-instruct --plot-only
+
+Or with an explicit JSON path (relative to ``linear_probes/`` or absolute):
+
+  python run_pilot_sweep.py --model-key llama-31-8b-instruct --plot-only \\
+    --probe-results-json results_linear_probes/llama-31-8b-instruct/linear_probes_...json
 """
 from __future__ import annotations
 
@@ -105,6 +110,18 @@ def main() -> None:
     p.add_argument("--position", choices=["prompt_last", "gen_first"], default="gen_first")
     p.add_argument("--target", choices=["utility", "rating"], default="utility")
     p.add_argument("--probe-mode", choices=["all", "per_role", "cross_role"], default="all")
+    p.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Skip collect and train; only read existing probe metrics JSON and save the figure. "
+        "Locates JSON from --model-key, --role, --save-dir, --position, --target, --probe-mode unless "
+        "--probe-results-json is set (path relative to experiments/linear_probes/ or absolute).",
+    )
+    p.add_argument(
+        "--probe-results-json",
+        default=None,
+        help="With --plot-only: explicit path to probe results JSON (relative to experiments/linear_probes/ if not absolute).",
+    )
     p.add_argument("--test-fraction", type=float, default=0.3)
     p.add_argument("--ridge-lambda", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=42)
@@ -116,6 +133,54 @@ def main() -> None:
     p.add_argument("--no-plot", action="store_true", help="Skip matplotlib plot")
 
     args = p.parse_args()
+
+    save_dir_rel = args.save_dir or f"results_linear_probes/{args.model_key}"
+    save_suffix = f"{args.model_key}_pilot_{args.role}".replace(" ", "_")
+
+    if args.plot_only:
+        from notebook_runs import best_layers_summary, existing_probe_results_path, plot_probe_results_file
+
+        results_path = existing_probe_results_path(
+            _UTILITY_ANALYSIS.parent,
+            save_dir=save_dir_rel,
+            save_suffix=save_suffix,
+            position=args.position,
+            target=args.target,
+            probe_mode=args.probe_mode,
+            explicit_path=args.probe_results_json,
+        )
+        if not results_path.is_file():
+            sys.exit(f"--plot-only: missing probe results JSON: {results_path}")
+
+        summ = best_layers_summary(results_path)
+        pm = summ["primary_metric"]
+        print(f"[plot-only] {results_path}")
+        print(f"Best layer by {pm} (max): {summ['best_layer_primary']}")
+        print(f"Best layer by test MSE (min): {summ['best_layer_mse']}")
+
+        if args.no_plot:
+            return
+
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("matplotlib not installed; skipping plot.", file=sys.stderr)
+            return
+
+        plot_path = args.plot_path
+        if plot_path is None:
+            plot_path = str((_LP_DIR / save_dir_rel / f"pilot_sweep_{save_suffix}.png").resolve())
+        Path(plot_path).parent.mkdir(parents=True, exist_ok=True)
+
+        tit = f"Pilot sweep ({args.target}, {args.position}, role={args.role}) [plot-only]"
+        fig, _, _ = plot_probe_results_file(results_path, title=tit)
+        fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print("Saved plot:", plot_path)
+        return
 
     models_path = _UTILITY_ANALYSIS / "models.yaml"
     with open(models_path, "r", encoding="utf-8") as f:
@@ -134,8 +199,6 @@ def main() -> None:
     layers_spec = ",".join(str(x) for x in pilot_layers)
 
     utilities_rel = args.utilities_path or _default_utilities_path(args.model_key, args.role)
-    save_dir_rel = args.save_dir or f"results_linear_probes/{args.model_key}"
-    save_suffix = f"{args.model_key}_pilot_{args.role}".replace(" ", "_")
 
     options_abs = (_LP_DIR / args.options_path).resolve()
     utils_abs = (_LP_DIR / utilities_rel).resolve()
@@ -235,20 +298,22 @@ def main() -> None:
         print(f"Warning: expected results file missing: {results_path}", file=sys.stderr)
         return
 
-    with open(results_path, "r", encoding="utf-8") as f:
-        pilot_results = json.load(f)
-    pilot_metrics = pilot_results["metrics_by_layer"]
-    layers_sorted = sorted(int(k) for k in pilot_metrics.keys())
-    metric_name = "accuracy" if "accuracy" in next(iter(pilot_metrics.values())) else "r2"
-    vals = [pilot_metrics[str(layer)][metric_name] for layer in layers_sorted]
-    best_layer = layers_sorted[int(np.argmax(vals))]
-    print(f"Pilot best layer by {metric_name}: {best_layer} ({max(vals):.4f})")
+    from notebook_runs import best_layers_summary, plot_probe_results_file
+
+    summ = best_layers_summary(results_path)
+    pm = summ["primary_metric"]
+    print(
+        f"Pilot best layer by {pm} (max): {summ['best_layer_primary']} "
+        f"(see probe JSON for value at that layer)"
+    )
+    print(f"Pilot best layer by test MSE (min): {summ['best_layer_mse']}")
 
     if args.no_plot:
         return
 
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -260,16 +325,10 @@ def main() -> None:
         plot_path = str((_LP_DIR / save_dir_rel / f"pilot_sweep_{save_suffix}.png").resolve())
     Path(plot_path).parent.mkdir(parents=True, exist_ok=True)
 
-    plt.figure(figsize=(9, 4))
-    plt.plot(layers_sorted, vals, marker="o")
-    plt.axvline(best_layer, linestyle="--", alpha=0.4)
-    plt.xlabel("Layer")
-    plt.ylabel(f"Test {metric_name}")
-    plt.title(f"Pilot sweep ({args.target}, {args.position}, role={args.role})")
-    plt.grid(alpha=0.2)
-    plt.tight_layout()
-    plt.savefig(plot_path, dpi=150)
-    plt.close()
+    tit = f"Pilot sweep ({args.target}, {args.position}, role={args.role})"
+    fig, _, _ = plot_probe_results_file(results_path, title=tit)
+    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
     print("Saved plot:", plot_path)
 
 

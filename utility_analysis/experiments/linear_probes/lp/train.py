@@ -9,7 +9,13 @@ import numpy as np
 import torch
 
 from lp.data import ExampleMeta
-from lp.metrics import r2_score, ridge_fit_closed_form, ridge_predict, spearmanr
+from lp.metrics import (
+    pairwise_preference_accuracy,
+    r2_score,
+    ridge_fit_closed_form,
+    ridge_predict,
+    spearmanr,
+)
 
 
 def train(args: argparse.Namespace) -> None:
@@ -92,7 +98,13 @@ def train(args: argparse.Namespace) -> None:
             mse = float(((yte - yhat) ** 2).mean())
             r2 = r2_score(yte, yhat)
             spr = spearmanr(yte, yhat)
-            layer_metrics: Dict[str, float] = {"mse": mse, "r2": float(r2), "spearman": float(spr)}
+            pacc = pairwise_preference_accuracy(yte, yhat)
+            layer_metrics: Dict[str, float] = {
+                "mse": mse,
+                "r2": float(r2),
+                "spearman": float(spr),
+                "pairwise_pref_acc": float(pacc),
+            }
             if args.target == "rating":
                 yhat_int = np.clip(np.rint(yhat), 1, 10).astype(np.int32)
                 yte_int = np.clip(np.rint(yte), 1, 10).astype(np.int32)
