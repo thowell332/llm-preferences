@@ -2,7 +2,17 @@ This folder contains experiment scripts referenced by `utility_analysis/experime
 
 ## Linear probes (`linear_probes`)
 
-Entry point: `experiments/linear_probes/run_linear_probes.py` (thin wrapper). Implementation modules live in `experiments/linear_probes/lp/`:
+Entry point: `experiments/linear_probes/run_linear_probes.py` (thin wrapper). For the **notebook-style pilot** (sample layers → collect → train → optional plot) in one command, use:
+
+```bash
+# From repo root: activate your venv first (see utility_analysis/README.md).
+source venv/bin/activate
+
+cd utility_analysis/experiments/linear_probes
+python run_pilot_sweep.py --model-key llama-31-8b-instruct
+```
+
+Otherwise run `collect` then `train` yourself (two commands). Implementation modules live in `experiments/linear_probes/lp/`:
 
 | Module | Role |
 |--------|------|

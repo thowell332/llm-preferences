@@ -29,6 +29,40 @@ from lp.debug import print_collect_startup
 from lp.hf_loader import build_hf_from_pretrained_kwargs, finalize_hf_model_on_device, load_hf_causal_lm
 
 
+def _vllm_draft_model_config_for_extract_hidden_states(
+    model_path: str,
+    tokenizer_path: Optional[str],
+    trust_remote_code: bool,
+) -> Any:
+    """
+    vLLM V1 speculative method ``extract_hidden_states`` requires
+    ``eagle_aux_hidden_state_layer_ids`` on the draft HF config. That is copied
+    from SpeculativeConfig.draft_model_config.hf_config.to_dict() before vLLM
+    wraps it in ExtractHiddenStatesConfig; passing only method/num_spec_tokens
+    leaves it empty and engine startup fails.
+
+    We inject the layer list via ModelConfig.hf_overrides so it lands on the
+    loaded Llama (etc.) config. Use all transformer layers so downstream code
+    can index hidden states by global layer id.
+    """
+    from vllm.config import ModelConfig
+
+    cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    n_layers = int(getattr(cfg, "num_hidden_layers"))
+    aux_ids = list(range(n_layers))
+    print(
+        f"[collect:vllm] extract_hidden_states: eagle_aux_hidden_state_layer_ids "
+        f"= 0..{n_layers - 1} ({n_layers} layers)",
+        flush=True,
+    )
+    return ModelConfig(
+        model=model_path,
+        tokenizer=tokenizer_path or model_path,
+        trust_remote_code=trust_remote_code,
+        hf_overrides={"eagle_aux_hidden_state_layer_ids": aux_ids},
+    )
+
+
 def collect_hf(
     args: argparse.Namespace,
     model_path: str,
@@ -96,6 +130,14 @@ def collect_hf(
     return prompt_last_list, gen_first_list, hidden_dim
 
 
+def _vllm_attention_config_from_args(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
+    raw = getattr(args, "vllm_attention_backend", None)
+    if not raw or str(raw).strip().lower() in ("", "auto", "none"):
+        return None
+    key = str(raw).strip().replace("-", "_").upper()
+    return {"backend": key}
+
+
 def collect_vllm(
     args: argparse.Namespace,
     model_path: str,
@@ -110,21 +152,49 @@ def collect_vllm(
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    draft_model_config = _vllm_draft_model_config_for_extract_hidden_states(
+        model_path, tokenizer_path, args.trust_remote_code
+    )
+
+    attention_config = _vllm_attention_config_from_args(args)
+    enforce_eager = bool(getattr(args, "vllm_enforce_eager", True))
+    compilation_config = 0 if bool(getattr(args, "vllm_no_compile", False)) else None
+    print(
+        f"[collect:vllm] LLM kwargs: enforce_eager={enforce_eager} "
+        f"compilation_config={compilation_config!r} attention_config={attention_config!r}",
+        flush=True,
+    )
+
     try:
-        llm = LLM(
+        llm_kwargs: Dict[str, Any] = dict(
             model=model_path,
             tokenizer=tokenizer_path or model_path,
             trust_remote_code=args.trust_remote_code,
             tensor_parallel_size=max(torch.cuda.device_count(), 1),
             gpu_memory_utilization=args.gpu_memory_utilization,
             max_model_len=args.max_model_len,
+            enforce_eager=enforce_eager,
             speculative_config={
                 "method": "extract_hidden_states",
                 "num_speculative_tokens": 1,
+                "draft_model_config": draft_model_config,
             },
         )
+        if attention_config is not None:
+            llm_kwargs["attention_config"] = attention_config
+        if compilation_config is not None:
+            llm_kwargs["compilation_config"] = compilation_config
+        llm = LLM(**llm_kwargs)
     except Exception as e:
         msg = str(e)
+        if "eagle_aux_hidden_state_layer_ids" in msg:
+            raise RuntimeError(
+                "vLLM extract_hidden_states failed: draft config missing "
+                "eagle_aux_hidden_state_layer_ids. This is unexpected after "
+                "linear_probes injects it via ModelConfig.hf_overrides; try "
+                "upgrading vLLM or report the stack trace. "
+                f"Original error:\n{e}"
+            ) from e
         if "extract_hidden_states" in msg or "SpeculativeConfig" in msg or "speculative_config" in msg:
             raise RuntimeError(
                 "Failed to initialize vLLM hidden-state extraction backend. "
@@ -153,7 +223,27 @@ def collect_vllm(
     total = len(prompts)
 
     for idx, prompt in enumerate(prompts, start=1):
-        req_outs = llm.generate([prompt], sampling_params)
+        try:
+            req_outs = llm.generate([prompt], sampling_params)
+        except Exception as e:
+            msg = str(e)
+            is_engine_dead = type(e).__name__ == "EngineDeadError"
+            is_cuda_msg = (
+                "CUDA" in msg
+                or "cuda" in msg
+                or "AcceleratorError" in type(e).__name__
+                or "CUDA error" in msg
+            )
+            if is_engine_dead or is_cuda_msg:
+                raise RuntimeError(
+                    "vLLM failed during generation (often WSL2 / driver / FlashInfer). "
+                    "Try: rerun with default --vllm-enforce-eager (on), add --vllm-no-compile, "
+                    "lower --gpu_memory_utilization, use --cuda_launch_blocking for a clearer stack, "
+                    "or --vllm-attention-backend flash_attn if flash-attn is installed. "
+                    "If the GPU was left in a bad state, reboot WSL (`wsl --shutdown`) or the host. "
+                    f"Original error:\n{e}"
+                ) from e
+            raise
         if not req_outs:
             raise RuntimeError("vLLM returned no outputs for prompt")
         out = req_outs[0]
@@ -275,6 +365,9 @@ def collect(args: argparse.Namespace) -> None:
         "max_new_tokens_for_parsing": args.max_new_tokens_for_parsing,
         "gpu_memory_utilization": args.gpu_memory_utilization if args.backend == "vllm" else None,
         "max_model_len": args.max_model_len if args.backend == "vllm" else None,
+        "vllm_enforce_eager": bool(getattr(args, "vllm_enforce_eager", True)) if args.backend == "vllm" else None,
+        "vllm_no_compile": bool(getattr(args, "vllm_no_compile", False)) if args.backend == "vllm" else None,
+        "vllm_attention_backend": getattr(args, "vllm_attention_backend", None) if args.backend == "vllm" else None,
         "dtype": "fp16" if args.fp16 else ("bf16" if args.bf16 else "fp32"),
         "hf_bnb_8bit": bool(getattr(args, "hf_bnb_8bit", False)) if args.backend == "hf" else None,
     }

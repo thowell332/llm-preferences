@@ -10,9 +10,11 @@ Additional code and contents will be added soon.
 
 ## Utility Analysis
 
-You can run experiments using the `run_experiments.py` script. For example, the following command will compute utilities over outcomes for GPT-4o:
+Activate the project virtual environment from the repo root (see [Utility Analysis README](utility_analysis/README.md#python-environment)), then run scripts from `utility_analysis/`. For example:
 
 ```bash
+source venv/bin/activate
+cd utility_analysis
 python run_experiments.py --experiments compute_utilities --models gpt-4o
 ```
 

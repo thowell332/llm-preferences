@@ -1,5 +1,18 @@
 # Utility Analysis
 
+## Python environment
+
+Create a virtual environment at the **repository root** (where `requirements.txt` lives), activate it, and install dependencies before running scripts or notebooks:
+
+```bash
+cd /path/to/value-driven-behavior
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Use `venv\Scripts\activate` on Windows. If you use a different env directory (e.g. `.venv`), adjust the `source` path accordingly.
+
 ## Data
 
 The main dataset of outcomes used in the paper is located in `shared_options/options_hierarchical.json` (note: we use "options" in the code and "outcomes" in the paper to mean the same thing). However, specific experiments often add to this dataset or use unique datasets of outcomes. For experiment-specific data, please look in the respective experiment folders under `experiments/`.

@@ -35,6 +35,24 @@ def main() -> None:
         help="vLLM gpu_memory_utilization setting for --backend vllm (lower to reduce KV cache allocation).",
     )
     parser.add_argument(
+        "--vllm-enforce-eager",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="vLLM: disable CUDA graph capture (default True; use --no-vllm-enforce-eager for max throughput on stable setups).",
+    )
+    parser.add_argument(
+        "--vllm-no-compile",
+        action="store_true",
+        help="vLLM: pass compilation_config=0 (no torch.compile / vLLM inductor path; slower but fewer GPU driver edge cases).",
+    )
+    parser.add_argument(
+        "--vllm-attention-backend",
+        type=str,
+        default=None,
+        help="vLLM AttentionConfig.backend override, e.g. flash_attn or flashinfer (default: vLLM auto). "
+        "Try flash_attn if FlashInfer fails on your stack (requires compatible flash-attn build).",
+    )
+    parser.add_argument(
         "--max_model_len",
         type=int,
         default=1024,
