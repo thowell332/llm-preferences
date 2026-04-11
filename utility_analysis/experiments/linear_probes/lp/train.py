@@ -147,6 +147,71 @@ def train(args: argparse.Namespace) -> None:
                 "metrics_by_layer": eval_one(train_idx, test_idx),
             }
         results["leave_one_role_out"] = by_role
+
+        min_ex = 10
+
+        def _metrics_train_test(train_idx: np.ndarray, test_idx: np.ndarray, li: int) -> Dict[str, float]:
+            X_np = X.numpy().astype(np.float32, copy=False)
+            Xtr = X_np[train_idx, li, :]
+            Xte = X_np[test_idx, li, :]
+            ytr = y[train_idx]
+            yte = y[test_idx]
+            w, b0 = ridge_fit_closed_form(Xtr, ytr, ridge_lambda=args.ridge_lambda)
+            yhat = ridge_predict(Xte, w, b0)
+            mse = float(((yte - yhat) ** 2).mean())
+            r2 = r2_score(yte, yhat)
+            spr = spearmanr(yte, yhat)
+            pacc = pairwise_preference_accuracy(yte, yhat)
+            out: Dict[str, float] = {
+                "mse": mse,
+                "r2": float(r2),
+                "spearman": float(spr),
+                "pairwise_pref_acc": float(pacc),
+            }
+            if args.target == "rating":
+                yhat_int = np.clip(np.rint(yhat), 1, 10).astype(np.int32)
+                yte_int = np.clip(np.rint(yte), 1, 10).astype(np.int32)
+                out["accuracy"] = float((yhat_int == yte_int).mean())
+            return out
+
+        nan_block = {k: float("nan") for k in ("mse", "r2", "spearman", "pairwise_pref_acc")}
+        if args.target == "rating":
+            nan_block["accuracy"] = float("nan")
+
+        pairwise_by_layer: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {}
+        for li, layer in enumerate(layers):
+            lk = str(layer)
+            pairwise_by_layer[lk] = {}
+            for tr in all_roles:
+                pairwise_by_layer[lk][tr] = {}
+                for te in all_roles:
+                    if tr == te:
+                        ridx = np.where(roles == te)[0]
+                        if len(ridx) < min_ex:
+                            pairwise_by_layer[lk][tr][te] = dict(nan_block)
+                            continue
+                        tr_idx, te_idx = split_indices(ridx)
+                        if len(tr_idx) < min_ex or len(te_idx) < min_ex:
+                            pairwise_by_layer[lk][tr][te] = dict(nan_block)
+                            continue
+                        pairwise_by_layer[lk][tr][te] = _metrics_train_test(tr_idx, te_idx, li)
+                    else:
+                        tr_idx = np.where(roles == tr)[0]
+                        te_idx = np.where(roles == te)[0]
+                        if len(tr_idx) < min_ex or len(te_idx) < min_ex:
+                            pairwise_by_layer[lk][tr][te] = dict(nan_block)
+                            continue
+                        pairwise_by_layer[lk][tr][te] = _metrics_train_test(tr_idx, te_idx, li)
+
+        results["pairwise_role_metrics"] = {
+            "roles": all_roles,
+            "description": (
+                "Rows = train role, columns = test role. Diagonal: ridge probe trained on a random "
+                "within-role train split, evaluated on the held-out split for that role. Off-diagonal: "
+                "trained on all examples from the row role, evaluated on all examples from the column role."
+            ),
+            "by_layer": pairwise_by_layer,
+        }
     else:
         raise ValueError(f"Unknown probe_mode: {args.probe_mode}")
 

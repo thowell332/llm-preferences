@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -27,6 +27,10 @@ __all__ = [
     "default_metric_name",
     "best_layers_summary",
     "plot_probe_results_file",
+    "plot_cross_role_generalization_and_utility",
+    "role_utility_matrix",
+    "utility_similarity_from_vectors",
+    "pairwise_metric_matrix",
     "artifact_paths",
 ]
 
@@ -436,3 +440,277 @@ def plot_probe_results_file(
         "mse_mean": m_mean_out,
     }
     return fig, (ax0, ax1), summary
+
+
+def _flatten_hierarchical_options_dict(hierarchical_options: Mapping[str, Any]) -> List[Any]:
+    """Same shape as ``compute_utilities.utils.flatten_hierarchical_options`` (no package import)."""
+    flattened: List[Any] = []
+    for _category, options in hierarchical_options.items():
+        flattened.extend(options)
+    return flattened
+
+
+def _load_option_ids_in_order(options_path: Path) -> List[str]:
+    """Match ``lp.data.load_options`` ordering without importing ``lp`` or ``compute_utilities``."""
+    raw: Any = json.loads(Path(options_path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        options_list = _flatten_hierarchical_options_dict(raw)
+    elif isinstance(raw, list):
+        options_list = raw
+    else:
+        raise ValueError(f"Invalid options type: {type(raw)}")
+    return [str(i) for i, _desc in enumerate(options_list)]
+
+
+def _load_utilities_mapping(utilities_path: Path) -> Dict[str, float]:
+    """Match ``lp.data.load_utilities`` without importing ``lp`` or ``compute_utilities``."""
+    data: Any = json.loads(Path(utilities_path).read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "utilities" in data:
+        data = data["utilities"]
+    if not isinstance(data, dict):
+        raise ValueError(
+            "utilities JSON must be a dict mapping option_id -> utility (or compute_utilities results with utilities key)."
+        )
+    out: Dict[str, float] = {}
+    for k, v in data.items():
+        kid = str(k)
+        if isinstance(v, (int, float)):
+            out[kid] = float(v)
+        elif isinstance(v, dict) and "mean" in v:
+            out[kid] = float(v["mean"])
+        else:
+            raise ValueError(f"Unrecognized utility value for id={k!r}: {v!r}")
+    return out
+
+
+def role_utility_matrix(
+    repo_root: Path,
+    model_key: str,
+    roles: Sequence[str],
+    options_path: Path,
+    *,
+    role_to_utilities_path: Optional[Mapping[str, Path | str]] = None,
+) -> Tuple[List[str], np.ndarray]:
+    """
+    Stack per-role utility vectors in ``options_path`` option-id order (same convention as collect).
+
+    Default paths: ``default_utilities_rel(model_key, role)`` resolved under ``linear_probes_dir``.
+    Override with ``role_to_utilities_path`` when utilities are not stored under the default names.
+    """
+    options_path = Path(options_path).resolve()
+    option_ids = _load_option_ids_in_order(options_path)
+    lp = linear_probes_dir(repo_root)
+    rows: List[np.ndarray] = []
+    for role in roles:
+        if role_to_utilities_path and role in role_to_utilities_path:
+            up = Path(role_to_utilities_path[role]).expanduser()
+            if not up.is_absolute():
+                up = (lp / up).resolve()
+            else:
+                up = up.resolve()
+        else:
+            rel = default_utilities_rel(model_key, role)
+            up = (lp / rel).resolve()
+        if not up.is_file():
+            raise FileNotFoundError(
+                f"Utilities JSON for role {role!r} not found at {up}. "
+                "Compute per-role utilities or pass role_to_utilities_path=…"
+            )
+        umap = _load_utilities_mapping(up)
+        rows.append(
+            np.array([float(umap[oid]) if oid in umap else np.nan for oid in option_ids], dtype=np.float64)
+        )
+    return list(roles), np.stack(rows, axis=0)
+
+
+def utility_similarity_from_vectors(vectors: np.ndarray, metric: str = "correlation") -> np.ndarray:
+    """``vectors`` (n_roles, n_options). Returns (n_roles, n_roles) similarity; NaNs zeroed like run_experiments."""
+    v = np.nan_to_num(np.asarray(vectors, dtype=np.float64), nan=0.0)
+    m = metric.lower()
+    if m == "cosine":
+        norms = np.linalg.norm(v, axis=1, keepdims=True) + 1e-12
+        nrm = v / norms
+        return np.nan_to_num(nrm @ nrm.T, nan=0.0)
+    if m == "correlation":
+        return np.nan_to_num(np.corrcoef(v), nan=0.0)
+    raise ValueError("metric must be 'correlation' or 'cosine'")
+
+
+def pairwise_metric_matrix(
+    probe_results: Mapping[str, Any],
+    layer: int,
+    metric: str = "r2",
+) -> Tuple[List[str], np.ndarray]:
+    """Train-role × test-role matrix from ``pairwise_role_metrics`` in a cross_role probe JSON."""
+    pr = probe_results.get("pairwise_role_metrics")
+    if not pr or "by_layer" not in pr:
+        raise ValueError(
+            "This cross_role JSON has no pairwise_role_metrics (re-run train after upgrading lp/train.py)."
+        )
+    roles = list(pr["roles"])
+    lk = str(int(layer))
+    if lk not in pr["by_layer"]:
+        raise KeyError(f"Layer {layer} not in pairwise_role_metrics")
+    blk = pr["by_layer"][lk]
+    n = len(roles)
+    mat = np.full((n, n), np.nan, dtype=np.float64)
+    for i, ri in enumerate(roles):
+        row = blk.get(ri, {})
+        for j, rj in enumerate(roles):
+            cell = row.get(rj)
+            if not cell:
+                continue
+            mat[i, j] = float(cell.get(metric, float("nan")))
+    return roles, mat
+
+
+def plot_cross_role_generalization_and_utility(
+    cross_role_results_path: Path,
+    *,
+    repo_root: Path,
+    model_key: str,
+    options_rel: str,
+    layer: Optional[int] = None,
+    gen_metric: str = "r2",
+    similarity_metric: str = "correlation",
+    role_display: Optional[Callable[[str], str]] = None,
+    role_to_utilities_path: Optional[Mapping[str, Path | str]] = None,
+) -> Tuple[Any, Any, Any, Dict[str, Any]]:
+    """
+    Three figures matching the full-experiment notebook:
+
+    1. Heatmap of pairwise probe generalization (row = train role, column = test role).
+    2. Heatmap of utility-vector similarity between roles (same option ordering as collect).
+    3. Scatter of off-diagonal pairs: utility similarity vs probe metric, with Pearson r.
+
+    ``layer`` defaults to the best layer by mean leave-one-role-out ``gen_metric`` on the same JSON.
+    """
+    import matplotlib.pyplot as plt
+    from scipy import stats
+
+    cross_role_results_path = Path(cross_role_results_path)
+    data = json.loads(cross_role_results_path.read_text())
+    if data.get("probe_mode") != "cross_role":
+        raise ValueError("Expected a cross_role probe_results JSON")
+
+    if layer is None:
+        summ = best_layers_summary(cross_role_results_path, primary_metric=gen_metric if gen_metric != "mse" else None)
+        layer = int(summ["best_layer_primary"])
+
+    roles, gen_mat = pairwise_metric_matrix(data, layer, gen_metric)
+    labels = [role_display(r) if role_display else r for r in roles]
+
+    opt_path = (linear_probes_dir(repo_root) / options_rel).resolve()
+    _, util_mat = role_utility_matrix(
+        repo_root,
+        model_key,
+        roles,
+        opt_path,
+        role_to_utilities_path=role_to_utilities_path,
+    )
+    sim_mat = utility_similarity_from_vectors(util_mat, similarity_metric)
+
+    def _heatmap_with_annotations(
+        ax: Any,
+        mat: np.ndarray,
+        row_labels: List[str],
+        col_labels: List[str],
+        *,
+        title: str,
+        cmap: str,
+        vmin: float,
+        vmax: float,
+        xlabel: str,
+        ylabel: str,
+    ) -> None:
+        n_r, n_c = mat.shape
+        im = ax.imshow(mat, cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal")
+        ax.set_xticks(np.arange(n_c))
+        ax.set_yticks(np.arange(n_r))
+        ax.set_xticklabels(col_labels, rotation=45, ha="right")
+        ax.set_yticklabels(row_labels)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        fig = ax.figure
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        for i in range(n_r):
+            for j in range(n_c):
+                v = mat[i, j]
+                if not np.isfinite(v):
+                    t = ""
+                else:
+                    t = f"{v:.2f}"
+                ax.text(j, i, t, ha="center", va="center", color="0.05", fontsize=8)
+        ax.set_xticks(np.arange(n_c), minor=True)
+        ax.set_yticks(np.arange(n_r), minor=True)
+        ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.25)
+        ax.tick_params(which="minor", bottom=False, left=False)
+
+    fig1, ax1 = plt.subplots(figsize=(max(7.0, 0.55 * len(roles)), max(5.5, 0.45 * len(roles))))
+    fin = gen_mat[np.isfinite(gen_mat)]
+    vmin_g = float(fin.min()) if fin.size else 0.0
+    vmax_g = float(fin.max()) if fin.size else 1.0
+    if vmin_g == vmax_g:
+        vmax_g = vmin_g + 1e-6
+    _heatmap_with_annotations(
+        ax1,
+        gen_mat,
+        labels,
+        labels,
+        title=f"Pairwise {gen_metric} @ layer {layer}\n(train row → test column)",
+        cmap="viridis",
+        vmin=vmin_g,
+        vmax=vmax_g,
+        xlabel="Test role",
+        ylabel="Train role",
+    )
+    fig1.tight_layout()
+
+    slabel = "Pearson r" if similarity_metric.lower() == "correlation" else "Cosine similarity"
+    fig2, ax2 = plt.subplots(figsize=(max(7.0, 0.55 * len(roles)), max(5.5, 0.45 * len(roles))))
+    _heatmap_with_annotations(
+        ax2,
+        sim_mat,
+        labels,
+        labels,
+        title=f"{slabel} of per-role utility vectors\n(same options as collect)",
+        cmap="RdYlGn",
+        vmin=-1.0,
+        vmax=1.0,
+        xlabel="Role",
+        ylabel="Role",
+    )
+    fig2.tight_layout()
+
+    xs: List[float] = []
+    ys: List[float] = []
+    for i in range(len(roles)):
+        for j in range(len(roles)):
+            if i == j:
+                continue
+            xs.append(float(sim_mat[i, j]))
+            ys.append(float(gen_mat[i, j]))
+    x_arr = np.array(xs, dtype=np.float64)
+    y_arr = np.array(ys, dtype=np.float64)
+    ok = np.isfinite(x_arr) & np.isfinite(y_arr)
+    x_arr, y_arr = x_arr[ok], y_arr[ok]
+
+    fig3, ax3 = plt.subplots(figsize=(6.0, 5.0))
+    ax3.scatter(x_arr, y_arr, alpha=0.85, edgecolors="k", linewidths=0.3)
+    if x_arr.size >= 2 and np.std(x_arr) > 1e-12 and np.std(y_arr) > 1e-12:
+        r_p, p_v = stats.pearsonr(x_arr, y_arr)
+        ax3.set_title(f"Off-diagonal role pairs (n={x_arr.size})\nPearson r = {r_p:.3f}, p = {p_v:.3g}")
+    else:
+        ax3.set_title(f"Off-diagonal role pairs (n={x_arr.size})")
+    ax3.set_xlabel(f"Utility-vector {similarity_metric}")
+    ax3.set_ylabel(f"Probe {gen_metric} (train → test)")
+    ax3.grid(alpha=0.25)
+    fig3.tight_layout()
+
+    info: Dict[str, Any] = {
+        "layer": layer,
+        "roles": roles,
+        "n_offdiag_pairs": int(x_arr.size),
+    }
+    return fig1, fig2, fig3, info
