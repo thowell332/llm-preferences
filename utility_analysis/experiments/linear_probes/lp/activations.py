@@ -125,13 +125,58 @@ def decode_generation(tokenizer: Any, gen_ids_json: str) -> str:
     return tokenizer.decode(gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
 
 
+def _transpose_slh_to_lsh(arr: np.ndarray, n_tokens: Optional[int]) -> np.ndarray:
+    """
+    vLLM's extract_hidden_states + ExampleHiddenStatesConnector stores activations as
+    [num_tokens, num_hidden_layers, hidden_size] (see ExtractHiddenStatesModel.forward).
+    Downstream code indexes [layer, position, :].
+    """
+    if n_tokens is None or arr.ndim != 3:
+        return arr
+    if arr.shape[0] == n_tokens and arr.shape[1] < n_tokens:
+        return np.ascontiguousarray(np.transpose(arr, (1, 0, 2)))
+    return arr
+
+
+def _hidden_states_array_from_file(path: str) -> Optional[np.ndarray]:
+    try:
+        from safetensors import safe_open
+
+        with safe_open(path, framework="pt", device="cpu") as f:
+            if "hidden_states" not in f.keys():
+                return None
+            t = f.get_tensor("hidden_states")
+            arr = t.detach().float().numpy()
+            if arr.ndim != 3:
+                return None
+            n_tok: Optional[int] = None
+            if "token_ids" in f.keys():
+                tid = f.get_tensor("token_ids")
+                n_tok = int(tid.numel())
+            return _transpose_slh_to_lsh(arr, n_tok)
+    except Exception:
+        pass
+    try:
+        arr = np.load(path, allow_pickle=True)
+        if isinstance(arr, np.ndarray) and arr.ndim == 3:
+            return arr
+    except Exception:
+        pass
+    return None
+
+
 def hidden_states_from_vllm_output(output: Any) -> Optional[np.ndarray]:
+    n_tok: Optional[int] = None
+    pt = getattr(output, "prompt_token_ids", None)
+    if pt is not None:
+        n_tok = len(pt)
+
     for attr in ("hidden_states", "prompt_hidden_states"):
         val = getattr(output, attr, None)
         if val is not None:
             arr = np.array(val)
             if arr.ndim == 3:
-                return arr
+                return _transpose_slh_to_lsh(arr, n_tok)
 
     kv = getattr(output, "kv_transfer_params", None)
     if isinstance(kv, dict):
@@ -139,10 +184,10 @@ def hidden_states_from_vllm_output(output: Any) -> Optional[np.ndarray]:
             if key in kv:
                 arr = np.array(kv[key])
                 if arr.ndim == 3:
-                    return arr
+                    return _transpose_slh_to_lsh(arr, n_tok)
         for key in ("hidden_states_path", "prompt_hidden_states_path", "hidden_state_path"):
             if key in kv and isinstance(kv[key], str) and os.path.exists(kv[key]):
-                arr = np.array(np.load(kv[key], allow_pickle=True))
-                if arr.ndim == 3:
+                arr = _hidden_states_array_from_file(kv[key])
+                if arr is not None and arr.ndim == 3:
                     return arr
     return None

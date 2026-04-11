@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -165,118 +166,152 @@ def collect_vllm(
         flush=True,
     )
 
-    try:
-        llm_kwargs: Dict[str, Any] = dict(
-            model=model_path,
-            tokenizer=tokenizer_path or model_path,
-            trust_remote_code=args.trust_remote_code,
-            tensor_parallel_size=max(torch.cuda.device_count(), 1),
-            gpu_memory_utilization=args.gpu_memory_utilization,
-            max_model_len=args.max_model_len,
-            enforce_eager=enforce_eager,
-            speculative_config={
-                "method": "extract_hidden_states",
-                "num_speculative_tokens": 1,
-                "draft_model_config": draft_model_config,
-            },
-        )
-        if attention_config is not None:
-            llm_kwargs["attention_config"] = attention_config
-        if compilation_config is not None:
-            llm_kwargs["compilation_config"] = compilation_config
-        llm = LLM(**llm_kwargs)
-    except Exception as e:
-        msg = str(e)
-        if "eagle_aux_hidden_state_layer_ids" in msg:
-            raise RuntimeError(
-                "vLLM extract_hidden_states failed: draft config missing "
-                "eagle_aux_hidden_state_layer_ids. This is unexpected after "
-                "linear_probes injects it via ModelConfig.hf_overrides; try "
-                "upgrading vLLM or report the stack trace. "
-                f"Original error:\n{e}"
-            ) from e
-        if "extract_hidden_states" in msg or "SpeculativeConfig" in msg or "speculative_config" in msg:
-            raise RuntimeError(
-                "Failed to initialize vLLM hidden-state extraction backend. "
-                "Your installed vLLM likely does not support "
-                "speculative_config.method='extract_hidden_states'. "
-                "Upgrade vLLM (e.g. pip install --upgrade 'vllm>=0.18.0'), restart runtime, and rerun. "
-                f"Original error:\n{e}"
-            ) from e
-        if "Free memory on device" in msg or "gpu_memory_utilization" in msg or "desired GPU memory utilization" in msg:
-            raise RuntimeError(
-                "vLLM failed to start due to insufficient GPU memory headroom. "
-                "Try reducing --gpu_memory_utilization (e.g. 0.7 or 0.6) and/or --max_model_len (e.g. 1024/2048), "
-                "and close other GPU processes. "
-                f"Original error:\n{e}"
-            ) from e
-        raise RuntimeError(
-            "Failed to initialize vLLM hidden-state extraction backend. "
-            "Original error:\n"
-            f"{e}"
-        ) from e
-
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=args.max_new_tokens_for_parsing)
-    prompt_last_list: List[torch.Tensor] = []
-    gen_first_list: List[torch.Tensor] = []
-    hidden_dim: Optional[int] = None
-    total = len(prompts)
-
-    for idx, prompt in enumerate(prompts, start=1):
+    with tempfile.TemporaryDirectory() as hidden_states_storage:
         try:
-            req_outs = llm.generate([prompt], sampling_params)
+            llm_kwargs: Dict[str, Any] = dict(
+                model=model_path,
+                tokenizer=tokenizer_path or model_path,
+                trust_remote_code=args.trust_remote_code,
+                tensor_parallel_size=max(torch.cuda.device_count(), 1),
+                gpu_memory_utilization=args.gpu_memory_utilization,
+                max_model_len=args.max_model_len,
+                enforce_eager=enforce_eager,
+                speculative_config={
+                    "method": "extract_hidden_states",
+                    "num_speculative_tokens": 1,
+                    "draft_model_config": draft_model_config,
+                },
+                kv_transfer_config={
+                    "kv_connector": "ExampleHiddenStatesConnector",
+                    "kv_role": "kv_producer",
+                    "kv_connector_extra_config": {"shared_storage_path": hidden_states_storage},
+                },
+            )
+            if attention_config is not None:
+                llm_kwargs["attention_config"] = attention_config
+            if compilation_config is not None:
+                llm_kwargs["compilation_config"] = compilation_config
+            llm = LLM(**llm_kwargs)
         except Exception as e:
             msg = str(e)
-            is_engine_dead = type(e).__name__ == "EngineDeadError"
-            is_cuda_msg = (
-                "CUDA" in msg
-                or "cuda" in msg
-                or "AcceleratorError" in type(e).__name__
-                or "CUDA error" in msg
-            )
-            if is_engine_dead or is_cuda_msg:
+            if "eagle_aux_hidden_state_layer_ids" in msg:
                 raise RuntimeError(
-                    "vLLM failed during generation (often WSL2 / driver / FlashInfer). "
-                    "Try: rerun with default --vllm-enforce-eager (on), add --vllm-no-compile, "
-                    "lower --gpu_memory_utilization, use --cuda_launch_blocking for a clearer stack, "
-                    "or --vllm-attention-backend flash_attn if flash-attn is installed. "
-                    "If the GPU was left in a bad state, reboot WSL (`wsl --shutdown`) or the host. "
+                    "vLLM extract_hidden_states failed: draft config missing "
+                    "eagle_aux_hidden_state_layer_ids. This is unexpected after "
+                    "linear_probes injects it via ModelConfig.hf_overrides; try "
+                    "upgrading vLLM or report the stack trace. "
                     f"Original error:\n{e}"
                 ) from e
-            raise
-        if not req_outs:
-            raise RuntimeError("vLLM returned no outputs for prompt")
-        out = req_outs[0]
-        hs = hidden_states_from_vllm_output(out)
-        if hs is None:
+            if "extract_hidden_states" in msg or "SpeculativeConfig" in msg or "speculative_config" in msg:
+                raise RuntimeError(
+                    "Failed to initialize vLLM hidden-state extraction backend. "
+                    "Your installed vLLM likely does not support "
+                    "speculative_config.method='extract_hidden_states'. "
+                    "Upgrade vLLM (e.g. pip install --upgrade 'vllm>=0.18.0'), restart runtime, and rerun. "
+                    f"Original error:\n{e}"
+                ) from e
+            if "Free memory on device" in msg or "gpu_memory_utilization" in msg or "desired GPU memory utilization" in msg:
+                raise RuntimeError(
+                    "vLLM failed to start due to insufficient GPU memory headroom. "
+                    "Try reducing --gpu_memory_utilization (e.g. 0.7 or 0.6) and/or --max_model_len (e.g. 1024/2048), "
+                    "and close other GPU processes. "
+                    f"Original error:\n{e}"
+                ) from e
             raise RuntimeError(
-                "vLLM hidden states unavailable. This runtime likely has an older vLLM version. "
-                "Upgrade vLLM or use --backend hf with a non-quantized model."
-            )
-        prompt_token_ids = getattr(out, "prompt_token_ids", None)
-        if prompt_token_ids is None:
-            prompt_token_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
-        prompt_len = len(prompt_token_ids)
-        prompt_last_idx = prompt_len - 1
-        gen_first_idx = prompt_len
-        if hs.shape[1] <= gen_first_idx:
-            raise RuntimeError(
-                f"Hidden states sequence too short ({hs.shape[1]}) for first generated token index {gen_first_idx}"
-            )
-        Xp = torch.tensor(np.stack([hs[l, prompt_last_idx, :] for l in layers], axis=0), dtype=torch.float16)
-        Xg = torch.tensor(np.stack([hs[l, gen_first_idx, :] for l in layers], axis=0), dtype=torch.float16)
-        if hidden_dim is None:
-            hidden_dim = int(Xp.shape[1])
-        prompt_last_list.append(Xp.cpu())
-        gen_first_list.append(Xg.cpu())
-        text = out.outputs[0].text if out.outputs else ""
-        metas[idx - 1].rating = parse_rating(text)
-        if args.progress_every and (idx % args.progress_every == 0 or idx == total):
-            recent = metas[max(0, idx - args.progress_every) : idx]
-            ok = sum(1 for m in recent if m.rating is not None)
-            print(f"[collect:vllm] {idx}/{total} done (recent parsed ratings: {ok}/{len(recent)})", flush=True)
+                "Failed to initialize vLLM hidden-state extraction backend. "
+                "Original error:\n"
+                f"{e}"
+            ) from e
 
-    return prompt_last_list, gen_first_list, hidden_dim
+        sampling_params = SamplingParams(temperature=0.0, max_tokens=args.max_new_tokens_for_parsing)
+        prompt_last_list: List[torch.Tensor] = []
+        gen_first_list: List[torch.Tensor] = []
+        hidden_dim: Optional[int] = None
+        total = len(prompts)
+
+        for idx, prompt in enumerate(prompts, start=1):
+            try:
+                req_outs = llm.generate([prompt], sampling_params)
+            except Exception as e:
+                msg = str(e)
+                is_engine_dead = type(e).__name__ == "EngineDeadError"
+                is_cuda_msg = (
+                    "CUDA" in msg
+                    or "cuda" in msg
+                    or "AcceleratorError" in type(e).__name__
+                    or "CUDA error" in msg
+                )
+                if is_engine_dead or is_cuda_msg:
+                    raise RuntimeError(
+                        "vLLM failed during generation (often WSL2 / driver / FlashInfer). "
+                        "Try: rerun with default --vllm-enforce-eager (on), add --vllm-no-compile, "
+                        "lower --gpu_memory_utilization, use --cuda_launch_blocking for a clearer stack, "
+                        "or --vllm-attention-backend flash_attn if flash-attn is installed. "
+                        "If the GPU was left in a bad state, reboot WSL (`wsl --shutdown`) or the host. "
+                        f"Original error:\n{e}"
+                    ) from e
+                raise
+            if not req_outs:
+                raise RuntimeError("vLLM returned no outputs for prompt")
+            out = req_outs[0]
+            hs = hidden_states_from_vllm_output(out)
+            if hs is None:
+                raise RuntimeError(
+                    "vLLM hidden states unavailable after generate(). "
+                    "Expected output.kv_transfer_params['hidden_states_path'] from "
+                    "ExampleHiddenStatesConnector (vLLM >= 0.18). Check vLLM logs or try upgrading vLLM."
+                )
+            prompt_token_ids = getattr(out, "prompt_token_ids", None)
+            if prompt_token_ids is None:
+                prompt_token_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
+            prompt_token_ids = [int(x) for x in prompt_token_ids]
+            prompt_len = len(prompt_token_ids)
+            prompt_last_idx = prompt_len - 1
+            gen_first_idx = prompt_len
+            if hs.shape[1] <= prompt_last_idx:
+                raise RuntimeError(
+                    f"Hidden states sequence too short ({hs.shape[1]}) for prompt_last index {prompt_last_idx}"
+                )
+            Xp = torch.tensor(np.stack([hs[l, prompt_last_idx, :] for l in layers], axis=0), dtype=torch.float16)
+
+            comp0 = out.outputs[0] if out.outputs else None
+            sampled = list(getattr(comp0, "token_ids", None) or []) if comp0 is not None else []
+            if not sampled:
+                raise RuntimeError(
+                    "vLLM returned no completion token_ids; need the first sampled token to run a "
+                    "second prefill for gen-first hidden states (ExampleHiddenStatesConnector only records the prompt)."
+                )
+            extended_ids = prompt_token_ids + [int(sampled[0])]
+            # vLLM rejects max_tokens=0 (VLLMValidationError); one decode step is fine—we only read prefill HS.
+            sp_prefill = SamplingParams(temperature=0.0, max_tokens=1)
+            out2_list = llm.generate([{"prompt_token_ids": extended_ids}], sp_prefill)
+            if not out2_list:
+                raise RuntimeError("vLLM returned no outputs for extended-token prefill")
+            out2 = out2_list[0]
+            hs2 = hidden_states_from_vllm_output(out2)
+            if hs2 is None:
+                raise RuntimeError(
+                    "vLLM hidden states unavailable after extended-prompt generate(); "
+                    "check kv_transfer_params / connector logs."
+                )
+            if hs2.shape[1] <= gen_first_idx:
+                raise RuntimeError(
+                    f"Second-pass hidden states too short ({hs2.shape[1]}) for first-generated index {gen_first_idx} "
+                    f"(expected prefill length >= {prompt_len + 1})."
+                )
+            Xg = torch.tensor(np.stack([hs2[l, gen_first_idx, :] for l in layers], axis=0), dtype=torch.float16)
+            if hidden_dim is None:
+                hidden_dim = int(Xp.shape[1])
+            prompt_last_list.append(Xp.cpu())
+            gen_first_list.append(Xg.cpu())
+            text = out.outputs[0].text if out.outputs else ""
+            metas[idx - 1].rating = parse_rating(text)
+            if args.progress_every and (idx % args.progress_every == 0 or idx == total):
+                recent = metas[max(0, idx - args.progress_every) : idx]
+                ok = sum(1 for m in recent if m.rating is not None)
+                print(f"[collect:vllm] {idx}/{total} done (recent parsed ratings: {ok}/{len(recent)})", flush=True)
+
+        return prompt_last_list, gen_first_list, hidden_dim
 
 
 def collect(args: argparse.Namespace) -> None:
