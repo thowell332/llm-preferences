@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,7 +33,7 @@ from lp.hf_loader import build_hf_from_pretrained_kwargs, finalize_hf_model_on_d
 
 
 def _role_stub(role: str) -> str:
-    return role.replace(" ", "_")
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", role).strip("_").lower() or "role"
 
 
 def _load_role_utilities_from_dir(utilities_dir: Path, role: str) -> Dict[str, float]:

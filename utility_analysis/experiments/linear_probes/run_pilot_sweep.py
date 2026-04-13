@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ _RUN_LINEAR_PROBES = _LP_DIR / "run_linear_probes.py"
 
 
 def _default_utilities_path(model_key: str, role: str) -> str:
-    role_slug = role.replace(" ", "_")
+    role_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", role).strip("_").lower() or "role"
     return (
         f"../../shared_utilities/options_custom/{model_key}/"
         f"results_utilities_{model_key}_{role_slug}.json"

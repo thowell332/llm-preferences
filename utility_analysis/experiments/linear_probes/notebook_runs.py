@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ def linear_probes_dir(repo_root: Path) -> Path:
 
 
 def default_utilities_rel(model_key: str, role: str) -> str:
-    role_slug = role.replace(" ", "_")
+    role_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", role).strip("_").lower() or "role"
     return (
         f"../../shared_utilities/options_custom/{model_key}/"
         f"results_utilities_{model_key}_{role_slug}.json"
