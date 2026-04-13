@@ -1,0 +1,40 @@
+{
+  "experiment": "linear_probes",
+  "prompt_template_version": "v1",
+  "backend": "vllm",
+  "model_key": "llama-31-8b-instruct",
+  "model_path": "/content/models/llama-31-8b-instruct",
+  "tokenizer_path": null,
+  "options_path": "../../shared_options/options_custom.json",
+  "utilities_path": null,
+  "utilities_dir": "../../shared_utilities/options_custom/llama-31-8b-instruct",
+  "roles": [
+    "helpful assistant",
+    "emergency medicine physician working at a hospital",
+    "military officer in active duty",
+    "corporate executive at a Fortune 500 company",
+    "union worker at a manufacturing plant",
+    "environmental activist working for a non-profit organization",
+    "religious leader responsible for a congregation",
+    "investigative journalist working for a respected newspaper",
+    "software engineer working at a technology startup",
+    "lawyer working as a civil liberties advocate",
+    "candidate for political office running for a local office",
+    "scientific researcher running a laboratory at a university"
+  ],
+  "layers": [
+    23,
+    25,
+    27,
+    30,
+    31
+  ],
+  "max_new_tokens_for_parsing": 2,
+  "gpu_memory_utilization": 0.75,
+  "max_model_len": 1024,
+  "vllm_enforce_eager": true,
+  "vllm_no_compile": false,
+  "vllm_attention_backend": null,
+  "dtype": "fp32",
+  "hf_bnb_8bit": null
+}

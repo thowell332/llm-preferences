@@ -1,0 +1,39 @@
+{
+  "experiment": "linear_probes",
+  "prompt_template_version": "v1",
+  "backend": "vllm",
+  "model_key": "llama-31-8b-instruct",
+  "model_path": "/content/models/llama-31-8b-instruct",
+  "tokenizer_path": null,
+  "options_path": "../../shared_options/options_custom.json",
+  "utilities_path": "../../shared_utilities/options_custom/llama-31-8b-instruct/results_utilities_llama-31-8b-instruct_helpful_assistant.json",
+  "roles": [
+    "helpful assistant"
+  ],
+  "layers": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27,
+    29,
+    31
+  ],
+  "max_new_tokens_for_parsing": 2,
+  "gpu_memory_utilization": 0.75,
+  "max_model_len": 256,
+  "vllm_enforce_eager": true,
+  "vllm_no_compile": false,
+  "vllm_attention_backend": null,
+  "dtype": "fp32",
+  "hf_bnb_8bit": null
+}
