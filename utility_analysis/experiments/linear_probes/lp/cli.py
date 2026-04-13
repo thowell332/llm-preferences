@@ -17,7 +17,16 @@ def main() -> None:
     parser.add_argument("--backend", choices=["hf", "vllm"], default="hf", help="Model backend for collection.")
 
     parser.add_argument("--options_path", default=None, help="Path to options.json (list or hierarchical dict)")
-    parser.add_argument("--utilities_path", default=None, help="Path to utilities.json (id->float or compute_utilities output)")
+    parser.add_argument(
+        "--utilities_path",
+        default=None,
+        help="Path to utilities.json or to a directory of per-role utility files.",
+    )
+    parser.add_argument(
+        "--utilities_dir",
+        default=None,
+        help="Directory containing per-role utility files (matched by '*_<role_stub>.json').",
+    )
     parser.add_argument("--roles", type=none_or_str, default=None, help="Comma-separated roles list")
     parser.add_argument("--roleset", type=none_or_str, default=None, help="Role set key in roles_config_path")
     parser.add_argument("--roles_config_path", type=none_or_str, default=None, help="Path to role_sets.yaml")
@@ -128,8 +137,10 @@ def main() -> None:
         args.save_dir = args.save_dir.replace("<model_key>", args.model_key)
 
     if args.stage == "collect":
-        if not args.options_path or not args.utilities_path:
-            raise ValueError("--options_path and --utilities_path are required for --stage collect")
+        if not args.options_path:
+            raise ValueError("--options_path is required for --stage collect")
+        if not args.utilities_path and not args.utilities_dir:
+            raise ValueError("Provide --utilities_path (file or directory) or --utilities_dir for --stage collect")
         collect(args)
     elif args.stage == "train":
         train(args)

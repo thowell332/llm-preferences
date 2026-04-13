@@ -125,6 +125,7 @@ def _collect_argv(
     save_suffix: str,
     options_path: str,
     utilities_path: str,
+    utilities_dir: Optional[str] = None,
     roles: Optional[str] = None,
     roleset: Optional[str] = None,
     roles_config_path: Optional[str] = None,
@@ -153,9 +154,10 @@ def _collect_argv(
         save_suffix,
         "--options_path",
         options_path,
-        "--utilities_path",
-        utilities_path,
     ]
+    if utilities_dir and str(utilities_dir).strip():
+        argv.extend(["--utilities_dir", str(utilities_dir)])
+    argv.extend(["--utilities_path", utilities_path])
     rs = (roles or "").strip()
     rset = (roleset or "").strip()
     rcp = (roles_config_path or "").strip()
@@ -239,6 +241,7 @@ def run_collect_then_train(
     save_suffix: str,
     options_path: str,
     utilities_path: str,
+    utilities_dir: Optional[str] = None,
     roles: Optional[str] = None,
     roleset: Optional[str] = None,
     roles_config_path: Optional[str] = None,
@@ -264,6 +267,9 @@ def run_collect_then_train(
     Run collect then train. For **roles**, pass either ``roles="a,b,c"`` **or**
     ``roleset="default"`` and ``roles_config_path="../../shared_options/role_sets.yaml"``
     (paths relative to ``experiments/linear_probes/`` unless absolute).
+    ``utilities_path`` can be a single utility JSON or a directory containing
+    per-role files ending in ``_<role_stub>.json``; ``utilities_dir`` is an explicit
+    directory override.
     """
     extra_env: Dict[str, str] = {}
     if backend == "hf":
@@ -275,6 +281,7 @@ def run_collect_then_train(
         save_suffix=save_suffix,
         options_path=options_path,
         utilities_path=utilities_path,
+        utilities_dir=utilities_dir,
         roles=roles,
         roleset=roleset,
         roles_config_path=roles_config_path,

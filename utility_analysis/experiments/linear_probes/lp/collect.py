@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -28,6 +29,49 @@ from lp.data import (
 )
 from lp.debug import print_collect_startup
 from lp.hf_loader import build_hf_from_pretrained_kwargs, finalize_hf_model_on_device, load_hf_causal_lm
+
+
+def _role_stub(role: str) -> str:
+    return role.replace(" ", "_")
+
+
+def _load_role_utilities_from_dir(utilities_dir: Path, role: str) -> Dict[str, float]:
+    role_stub = _role_stub(role)
+    suffix = f"_{role_stub}.json"
+    candidates = sorted(p for p in utilities_dir.glob(f"*{suffix}") if p.is_file())
+    if not candidates:
+        raise FileNotFoundError(
+            f"No utility file found for role {role!r} in {utilities_dir}. "
+            f"Expected a filename ending in {suffix!r}."
+        )
+    if len(candidates) > 1:
+        names = ", ".join(p.name for p in candidates)
+        raise ValueError(
+            f"Multiple utility files match role {role!r} in {utilities_dir}: {names}. "
+            f"Expected exactly one filename ending in {suffix!r}."
+        )
+    return load_utilities(str(candidates[0]))
+
+
+def _resolve_role_to_utilities(args: argparse.Namespace, roles: List[str]) -> Dict[str, Dict[str, float]]:
+    raw_dir = getattr(args, "utilities_dir", None)
+    raw_path = getattr(args, "utilities_path", None)
+
+    utilities_dir: Optional[Path] = None
+    if raw_dir:
+        utilities_dir = Path(str(raw_dir)).expanduser().resolve()
+    elif raw_path and Path(str(raw_path)).expanduser().is_dir():
+        utilities_dir = Path(str(raw_path)).expanduser().resolve()
+
+    if utilities_dir is not None:
+        if not utilities_dir.is_dir():
+            raise NotADirectoryError(f"utilities_dir is not a directory: {utilities_dir}")
+        return {role: _load_role_utilities_from_dir(utilities_dir, role) for role in roles}
+
+    if not raw_path:
+        raise ValueError("Missing utility source: provide --utilities_path or --utilities_dir")
+    shared = load_utilities(str(raw_path))
+    return {role: shared for role in roles}
 
 
 def _vllm_draft_model_config_for_extract_hidden_states(
@@ -327,11 +371,12 @@ def collect(args: argparse.Namespace) -> None:
 
     options = load_options(args.options_path)
     roles = load_roles(args.roles, args.roleset, args.roles_config_path)
-    utilities = load_utilities(args.utilities_path)
+    role_to_utilities = _resolve_role_to_utilities(args, roles)
 
     metas: List[ExampleMeta] = []
     prompts: List[str] = []
     for role in roles:
+        utilities = role_to_utilities[role]
         for opt in options:
             if args.max_examples and len(prompts) >= args.max_examples:
                 break
@@ -395,6 +440,7 @@ def collect(args: argparse.Namespace) -> None:
         "tokenizer_path": tokenizer_path,
         "options_path": args.options_path,
         "utilities_path": args.utilities_path,
+        "utilities_dir": getattr(args, "utilities_dir", None),
         "roles": roles,
         "layers": layers,
         "max_new_tokens_for_parsing": args.max_new_tokens_for_parsing,
