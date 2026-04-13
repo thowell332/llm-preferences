@@ -124,7 +124,7 @@ def _collect_argv(
     save_dir: str,
     save_suffix: str,
     options_path: str,
-    utilities_path: str,
+    utilities_path: Optional[str] = None,
     utilities_dir: Optional[str] = None,
     roles: Optional[str] = None,
     roleset: Optional[str] = None,
@@ -157,7 +157,10 @@ def _collect_argv(
     ]
     if utilities_dir and str(utilities_dir).strip():
         argv.extend(["--utilities_dir", str(utilities_dir)])
-    argv.extend(["--utilities_path", utilities_path])
+    if utilities_path and str(utilities_path).strip():
+        argv.extend(["--utilities_path", str(utilities_path)])
+    elif not (utilities_dir and str(utilities_dir).strip()):
+        raise ValueError("Provide either utilities_path (file/dir) or utilities_dir.")
     rs = (roles or "").strip()
     rset = (roleset or "").strip()
     rcp = (roles_config_path or "").strip()
@@ -240,7 +243,7 @@ def run_collect_then_train(
     save_dir: str,
     save_suffix: str,
     options_path: str,
-    utilities_path: str,
+    utilities_path: Optional[str] = None,
     utilities_dir: Optional[str] = None,
     roles: Optional[str] = None,
     roleset: Optional[str] = None,
