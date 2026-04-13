@@ -64,9 +64,30 @@ def run_linear_probes(repo_root: Path, argv: Sequence[str], *, extra_env: Option
     env = {**os.environ, "PYTHONFAULTHANDLER": "1"}
     if extra_env:
         env.update(extra_env)
-    rc = subprocess.run(cmd, cwd=str(lp), env=env)
+    rc = subprocess.run(
+        cmd,
+        cwd=str(lp),
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    if rc.stdout:
+        print(rc.stdout, end="" if rc.stdout.endswith("\n") else "\n", flush=True)
+    if rc.stderr:
+        print(rc.stderr, end="" if rc.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
     if rc.returncode != 0:
-        raise RuntimeError(f"run_linear_probes exited with code {rc.returncode}")
+        stdout_tail = "\n".join(rc.stdout.strip().splitlines()[-80:]) if rc.stdout else "(none)"
+        stderr_tail = "\n".join(rc.stderr.strip().splitlines()[-80:]) if rc.stderr else "(none)"
+        raise RuntimeError(
+            "run_linear_probes failed.\n"
+            f"Exit code: {rc.returncode}\n"
+            f"CWD: {lp}\n"
+            f"Command: {' '.join(cmd)}\n\n"
+            "Last stdout lines:\n"
+            f"{stdout_tail}\n\n"
+            "Last stderr lines:\n"
+            f"{stderr_tail}"
+        )
 
 
 def probe_results_path(
