@@ -72,10 +72,25 @@ def load_roles(
     if not roles_config_path:
         raise ValueError("When using --roleset you must provide --roles_config_path")
     with open(roles_config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-    if roleset not in cfg:
-        raise ValueError(f"roleset '{roleset}' not found in {roles_config_path}")
-    return list(cfg[roleset])
+        data = yaml.safe_load(f) or {}
+    # Top-level { set_name: [roles] } or nested { role_sets: { set_name: [roles] } } (see shared_options/role_sets.yaml).
+    role_sets = data.get("role_sets", data)
+    if not isinstance(role_sets, dict):
+        raise ValueError(
+            f"Invalid roles config structure in {roles_config_path}. "
+            "Expected a mapping of roleset name -> list of role strings."
+        )
+    if roleset not in role_sets:
+        available = ", ".join(sorted(role_sets.keys()))
+        raise ValueError(
+            f"roleset {roleset!r} not found in {roles_config_path}. Available: {available}"
+        )
+    roles_list = role_sets[roleset]
+    if not isinstance(roles_list, list) or not all(isinstance(r, str) for r in roles_list):
+        raise ValueError(
+            f"roleset {roleset!r} in {roles_config_path} must be a list of role strings."
+        )
+    return [r.strip() for r in roles_list if r and r.strip()]
 
 
 def load_utilities(utilities_path: str) -> Dict[str, float]:

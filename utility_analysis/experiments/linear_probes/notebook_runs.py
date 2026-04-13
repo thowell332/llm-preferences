@@ -125,7 +125,9 @@ def _collect_argv(
     save_suffix: str,
     options_path: str,
     utilities_path: str,
-    roles: str,
+    roles: Optional[str] = None,
+    roleset: Optional[str] = None,
+    roles_config_path: Optional[str] = None,
     layers: str,
     max_new_tokens_for_parsing: int,
     max_model_len: int,
@@ -153,8 +155,19 @@ def _collect_argv(
         options_path,
         "--utilities_path",
         utilities_path,
-        "--roles",
-        roles,
+    ]
+    rs = (roles or "").strip()
+    rset = (roleset or "").strip()
+    rcp = (roles_config_path or "").strip()
+    if rs:
+        argv.extend(["--roles", rs])
+    elif rset and rcp:
+        argv.extend(["--roleset", rset, "--roles_config_path", rcp])
+    else:
+        raise ValueError("Provide either roles='a,b,c' or both roleset=... and roles_config_path=...")
+
+    argv.extend(
+        [
         "--layers",
         layers,
         "--max_new_tokens_for_parsing",
@@ -163,7 +176,8 @@ def _collect_argv(
         str(max_model_len),
         "--max_examples",
         str(max_examples),
-    ]
+        ]
+    )
     if trust_remote_code:
         argv.append("--trust_remote_code")
     if force_cpu:
@@ -225,7 +239,9 @@ def run_collect_then_train(
     save_suffix: str,
     options_path: str,
     utilities_path: str,
-    roles: str,
+    roles: Optional[str] = None,
+    roleset: Optional[str] = None,
+    roles_config_path: Optional[str] = None,
     layers: str,
     max_new_tokens_for_parsing: int,
     max_model_len: int,
@@ -244,6 +260,11 @@ def run_collect_then_train(
     vllm_no_compile: bool = False,
     vllm_attention_backend: Optional[str] = None,
 ) -> Tuple[Dict[str, Path], Path]:
+    """
+    Run collect then train. For **roles**, pass either ``roles="a,b,c"`` **or**
+    ``roleset="default"`` and ``roles_config_path="../../shared_options/role_sets.yaml"``
+    (paths relative to ``experiments/linear_probes/`` unless absolute).
+    """
     extra_env: Dict[str, str] = {}
     if backend == "hf":
         extra_env["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -255,6 +276,8 @@ def run_collect_then_train(
         options_path=options_path,
         utilities_path=utilities_path,
         roles=roles,
+        roleset=roleset,
+        roles_config_path=roles_config_path,
         layers=layers,
         max_new_tokens_for_parsing=max_new_tokens_for_parsing,
         max_model_len=max_model_len,
