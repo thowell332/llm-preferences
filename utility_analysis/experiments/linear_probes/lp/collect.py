@@ -38,17 +38,17 @@ def _role_stub(role: str) -> str:
 def _load_role_utilities_from_dir(utilities_dir: Path, role: str) -> Dict[str, float]:
     role_stub = _role_stub(role)
     suffix = f"_{role_stub}.json"
-    candidates = sorted(p for p in utilities_dir.glob(f"*{suffix}") if p.is_file())
+    candidates = sorted(p for p in utilities_dir.glob(f"results_utilities*{suffix}") if p.is_file())
     if not candidates:
         raise FileNotFoundError(
             f"No utility file found for role {role!r} in {utilities_dir}. "
-            f"Expected a filename ending in {suffix!r}."
+            f"Expected a filename matching 'results_utilities*{suffix}'."
         )
     if len(candidates) > 1:
         names = ", ".join(p.name for p in candidates)
         raise ValueError(
             f"Multiple utility files match role {role!r} in {utilities_dir}: {names}. "
-            f"Expected exactly one filename ending in {suffix!r}."
+            f"Expected exactly one filename matching 'results_utilities*{suffix}'."
         )
     return load_utilities(str(candidates[0]))
 
