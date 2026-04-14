@@ -155,6 +155,29 @@ def parse_rating(text: str) -> Optional[int]:
     return None
 
 
+def parse_rating_from_first_token_text(text: str) -> Optional[int]:
+    """
+    Parse rating using only the first generated token text.
+
+    Rules:
+    - Strip leading/trailing whitespace from the token text.
+    - If first character is not a digit, treat as unparseable.
+    - Accept only exactly ``"10"`` or a single digit ``"1"``-``"9"``.
+    """
+    if text is None:
+        return None
+    s = str(text).strip()
+    if not s:
+        return None
+    if not s[0].isdigit():
+        return None
+    if s.startswith("10"):
+        return 10
+    if s[0] in "123456789":
+        return int(s[0])
+    return None
+
+
 @dataclass
 class ExampleMeta:
     role: str
