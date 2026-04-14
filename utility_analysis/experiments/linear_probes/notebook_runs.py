@@ -884,6 +884,7 @@ def run_forced_choice_probe_steering(
     max_model_len: int = 1024,
     max_new_tokens: int = 3,
     ridge_lambda: float = 1.0,
+    trust_remote_code: bool = True,
     output_jsonl_path: Optional[Path | str] = None,
 ) -> Tuple[Path, Dict[str, Any]]:
     """
@@ -959,11 +960,21 @@ def run_forced_choice_probe_steering(
         w_b[L] = wb / nb
 
     model_path, tokenizer_path = _resolve_model_paths_local(repo_root, model_key)
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=trust_remote_code)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     dtype = torch.float16
-    dummy_args = type("DummyArgs", (), {"force_cpu": False, "hf_device_map_auto": False, "hf_direct_gpu_load": False, "hf_bnb_8bit": False})()
+    dummy_args = type(
+        "DummyArgs",
+        (),
+        {
+            "force_cpu": False,
+            "hf_device_map_auto": False,
+            "hf_direct_gpu_load": False,
+            "hf_bnb_8bit": False,
+            "trust_remote_code": bool(trust_remote_code),
+        },
+    )()
     fp_kwargs, move_to_cuda_after_load = build_hf_from_pretrained_kwargs(dummy_args, dtype, model_path)
     model = load_hf_causal_lm(model_path, fp_kwargs)
     model = finalize_hf_model_on_device(model, move_to_cuda_after_load)
