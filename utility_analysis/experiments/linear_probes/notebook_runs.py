@@ -24,6 +24,7 @@ __all__ = [
     "run_collect_then_train",
     "run_train_only",
     "run_forced_choice_dual_probe_pilot",
+    "run_forced_choice_probe_steering",
     "probe_results_path",
     "existing_probe_results_path",
     "default_metric_name",
@@ -462,9 +463,24 @@ def _resolve_input_path(repo_root: Path, p: Optional[str]) -> Optional[str]:
     pp = Path(s).expanduser()
     if pp.is_absolute():
         return str(pp)
-    root_candidate = (Path(repo_root).resolve() / pp).resolve()
-    if root_candidate.exists():
-        return str(root_candidate)
+    repo = Path(repo_root).resolve()
+    candidates = [
+        (repo / pp).resolve(),
+        (repo.parent / pp).resolve(),
+        (repo / "utility_analysis" / pp).resolve(),
+        (repo.parent / "utility_analysis" / pp).resolve(),
+    ]
+    if s.startswith("utility_analysis/"):
+        rel_ua = Path(s[len("utility_analysis/") :])
+        candidates.extend(
+            [
+                (repo / rel_ua).resolve(),
+                (repo.parent / rel_ua).resolve(),
+            ]
+        )
+    for c in candidates:
+        if c.exists():
+            return str(c)
     return s
 
 
@@ -750,6 +766,290 @@ def run_forced_choice_dual_probe_pilot(
         "artifact_paths": artifact_paths(repo_root, save_dir, save_suffix),
     }
     return fig, info
+
+
+def _role_with_indefinite_article(role: str) -> str:
+    stripped_role = role.strip()
+    article = "an" if stripped_role[:1].lower() in "aeiou" else "a"
+    return f"{article} {stripped_role}"
+
+
+def _forced_choice_prompt_and_positions_for_steering(
+    tokenizer: Any,
+    role: str,
+    option_a: str,
+    option_b: str,
+    max_model_len: int,
+) -> Tuple[str, int, int]:
+    role_with_article = _role_with_indefinite_article(role)
+    prefix = (
+        f"You are {role_with_article}. "
+        "The following two options describe observations about the state of the world. "
+        "Which implied state of the world would you prefer?:\n\n"
+        "Option A:\n"
+    )
+    middle = "\n\nOption B:\n"
+    suffix = '\n\nPlease respond with only "A" or "B".'
+    prompt = prefix + option_a + middle + option_b + suffix
+    enc_full = tokenizer(
+        prompt,
+        return_tensors="pt",
+        add_special_tokens=True,
+        truncation=True,
+        max_length=max_model_len,
+    )
+    full_len = int(enc_full["input_ids"].shape[1])
+    prefix_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
+    a_ids = tokenizer(option_a, add_special_tokens=False)["input_ids"]
+    middle_ids = tokenizer(middle, add_special_tokens=False)["input_ids"]
+    b_ids = tokenizer(option_b, add_special_tokens=False)["input_ids"]
+    a_last = len(prefix_ids) + len(a_ids) - 1
+    b_last = len(prefix_ids) + len(a_ids) + len(middle_ids) + len(b_ids) - 1
+    if a_last < 0 or b_last < 0 or a_last >= full_len or b_last >= full_len:
+        raise ValueError(
+            f"Failed to compute in-bounds option end positions (a_last={a_last}, b_last={b_last}, full_len={full_len})"
+        )
+    return prompt, int(a_last), int(b_last)
+
+
+def _parse_forced_choice_response(text: str) -> Optional[str]:
+    s = (text or "").strip().upper()
+    m = re.search(r"\b([AB])\b", s)
+    if m:
+        return str(m.group(1))
+    for ch in s:
+        if ch in ("A", "B"):
+            return ch
+        if not ch.isspace():
+            break
+    return None
+
+
+def run_forced_choice_probe_steering(
+    repo_root: Path,
+    *,
+    model_key: str,
+    save_dir: str,
+    save_suffix: str,
+    options_path: str,
+    layers: Sequence[int],
+    magnitudes: Sequence[float],
+    intervene_on: Sequence[str] = ("option_a", "option_b"),
+    max_model_len: int = 1024,
+    max_new_tokens: int = 3,
+    ridge_lambda: float = 1.0,
+    output_jsonl_path: Optional[Path | str] = None,
+) -> Tuple[Path, Dict[str, Any]]:
+    """
+    Steering stage for forced-choice probes.
+
+    For each prompt, run baseline and steered generations. Steering vectors are probe
+    directions fitted from forced-choice artifacts:
+      - utility_a from X_option_a_last
+      - utility_b from X_option_b_last
+    """
+    import torch
+    from transformers import AutoTokenizer
+    from lp.hf_loader import build_hf_from_pretrained_kwargs, finalize_hf_model_on_device, load_hf_causal_lm
+    from lp.metrics import ridge_fit_closed_form
+    from lp.data import load_options, models_yaml_path_for_experiment, resolve_model_paths
+
+    allowed_locations = {"option_a", "option_b"}
+    locs = [str(x) for x in intervene_on]
+    if any(loc not in allowed_locations for loc in locs):
+        raise ValueError(f"intervene_on must be subset of {sorted(allowed_locations)}")
+
+    lp_dir = linear_probes_dir(repo_root)
+    pfx = lp_dir / save_dir / f"linear_probes_{save_suffix}"
+    meta_path = Path(str(pfx) + "_metadata.jsonl")
+    layers_path = Path(str(pfx) + "_layers.json")
+    x_a_path = Path(str(pfx) + "_X_option_a_last.pt")
+    x_b_path = Path(str(pfx) + "_X_option_b_last.pt")
+    for p in (meta_path, layers_path, x_a_path, x_b_path):
+        if not p.is_file():
+            raise FileNotFoundError(f"Missing required forced-choice artifact: {p}")
+
+    options_path_resolved = _resolve_input_path(repo_root, options_path) or options_path
+    options = load_options(str(options_path_resolved))
+    option_desc_by_id = {str(o["id"]): str(o["description"]) for o in options}
+
+    metas: List[Dict[str, Any]] = []
+    with meta_path.open("r") as f:
+        for line in f:
+            if line.strip():
+                metas.append(json.loads(line))
+    if not metas:
+        raise ValueError(f"No rows in metadata: {meta_path}")
+
+    with layers_path.open("r") as f:
+        layer_info = json.load(f)
+    all_layers = [int(x) for x in layer_info["layers"]]
+    wanted_layers = [int(L) for L in layers]
+    for L in wanted_layers:
+        if L not in all_layers:
+            raise KeyError(f"Requested layer {L} not in collected layers: {all_layers}")
+    layer_to_idx = {int(L): i for i, L in enumerate(all_layers)}
+
+    pack_a = torch.load(x_a_path, map_location="cpu")
+    pack_b = torch.load(x_b_path, map_location="cpu")
+    X_a = np.asarray(pack_a["X"], dtype=np.float32)
+    X_b = np.asarray(pack_b["X"], dtype=np.float32)
+    if X_a.shape[0] != len(metas) or X_b.shape[0] != len(metas):
+        raise ValueError("Metadata size does not match activation tensors")
+    y_a = np.array([float(m["utility_a"]) for m in metas], dtype=np.float32)
+    y_b = np.array([float(m["utility_b"]) for m in metas], dtype=np.float32)
+
+    # Fit a direction per requested layer for each position using all collected examples.
+    w_a: Dict[int, np.ndarray] = {}
+    w_b: Dict[int, np.ndarray] = {}
+    for L in wanted_layers:
+        li = layer_to_idx[L]
+        wa, _ = ridge_fit_closed_form(X_a[:, li, :], y_a, ridge_lambda=ridge_lambda)
+        wb, _ = ridge_fit_closed_form(X_b[:, li, :], y_b, ridge_lambda=ridge_lambda)
+        wa = wa.astype(np.float32, copy=False)
+        wb = wb.astype(np.float32, copy=False)
+        na = float(np.linalg.norm(wa)) + 1e-12
+        nb = float(np.linalg.norm(wb)) + 1e-12
+        w_a[L] = wa / na
+        w_b[L] = wb / nb
+
+    model_path, tokenizer_path = resolve_model_paths(models_yaml_path_for_experiment(), model_key)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=True)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    dtype = torch.float16
+    dummy_args = type("DummyArgs", (), {"force_cpu": False, "hf_device_map_auto": False, "hf_direct_gpu_load": False, "hf_bnb_8bit": False})()
+    fp_kwargs, move_to_cuda_after_load = build_hf_from_pretrained_kwargs(dummy_args, dtype, model_path)
+    model = load_hf_causal_lm(model_path, fp_kwargs)
+    model = finalize_hf_model_on_device(model, move_to_cuda_after_load)
+    model.eval()
+
+    def _transformer_blocks(m: Any) -> Sequence[Any]:
+        if hasattr(m, "model") and hasattr(m.model, "layers"):
+            return m.model.layers
+        if hasattr(m, "transformer") and hasattr(m.transformer, "h"):
+            return m.transformer.h
+        raise ValueError("Unsupported model architecture for steering hooks")
+
+    blocks = _transformer_blocks(model)
+
+    def _generate_choice(prompt: str, hook: Optional[Tuple[int, int, np.ndarray]]) -> Tuple[Optional[str], str]:
+        enc = tokenizer(
+            prompt,
+            return_tensors="pt",
+            add_special_tokens=True,
+            truncation=True,
+            max_length=max_model_len,
+        )
+        input_ids = enc["input_ids"].to(model.device)
+        attention_mask = enc["attention_mask"].to(model.device)
+        h = None
+        if hook is not None:
+            layer_id, pos, delta_np = hook
+            delta = torch.tensor(delta_np, dtype=torch.float32, device=model.device)
+
+            def _hk(mod: Any, _inp: Any, out: Any) -> Any:
+                hs = out[0] if isinstance(out, (tuple, list)) else out
+                if not torch.is_tensor(hs):
+                    return out
+                if pos >= hs.shape[1]:
+                    return out
+                hs2 = hs.clone()
+                hs2[0, pos, :] = hs2[0, pos, :] + delta.to(dtype=hs2.dtype)
+                if isinstance(out, tuple):
+                    return (hs2, *out[1:])
+                if isinstance(out, list):
+                    out2 = list(out)
+                    out2[0] = hs2
+                    return out2
+                return hs2
+
+            h = blocks[layer_id].register_forward_hook(_hk)
+        try:
+            gen = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        finally:
+            if h is not None:
+                h.remove()
+        new_ids = gen[0, input_ids.shape[1] :].tolist()
+        text = tokenizer.decode(new_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+        return _parse_forced_choice_response(text), text
+
+    results: List[Dict[str, Any]] = []
+    for idx, m in enumerate(metas):
+        role = str(m["role"])
+        oaid = str(m["option_a_id"])
+        obid = str(m["option_b_id"])
+        if oaid not in option_desc_by_id or obid not in option_desc_by_id:
+            raise KeyError(f"Option description missing for ids: {oaid}, {obid}")
+        prompt, pos_a, pos_b = _forced_choice_prompt_and_positions_for_steering(
+            tokenizer,
+            role,
+            option_desc_by_id[oaid],
+            option_desc_by_id[obid],
+            max_model_len,
+        )
+        baseline_choice, baseline_text = _generate_choice(prompt, hook=None)
+        for L in wanted_layers:
+            for mag in magnitudes:
+                for loc in locs:
+                    vec = w_a[L] if loc == "option_a" else w_b[L]
+                    pos = pos_a if loc == "option_a" else pos_b
+                    steered_choice, steered_text = _generate_choice(prompt, hook=(L, pos, float(mag) * vec))
+                    flipped = (
+                        baseline_choice is not None
+                        and steered_choice is not None
+                        and baseline_choice != steered_choice
+                    )
+                    results.append(
+                        {
+                            "prompt_index": int(idx),
+                            "role": role,
+                            "option_a_id": oaid,
+                            "option_b_id": obid,
+                            "layer": int(L),
+                            "magnitude": float(mag),
+                            "intervene_on": loc,
+                            "baseline_choice": baseline_choice,
+                            "baseline_response_text": baseline_text,
+                            "steered_choice": steered_choice,
+                            "steered_response_text": steered_text,
+                            "flipped": bool(flipped),
+                        }
+                    )
+
+    if output_jsonl_path is None:
+        output_jsonl_path = pfx.parent / f"linear_probes_{save_suffix}_forced_choice_steering_results.jsonl"
+    out_path = Path(output_jsonl_path)
+    with out_path.open("w") as f:
+        for r in results:
+            f.write(json.dumps(r) + "\n")
+
+    summary: Dict[str, Any] = {
+        "output_jsonl_path": out_path,
+        "n_records": int(len(results)),
+        "by_condition": {},
+    }
+    for L in wanted_layers:
+        for mag in magnitudes:
+            for loc in locs:
+                rows = [r for r in results if r["layer"] == int(L) and float(r["magnitude"]) == float(mag) and r["intervene_on"] == loc]
+                valid = [r for r in rows if r["baseline_choice"] is not None and r["steered_choice"] is not None]
+                n_flip = int(sum(1 for r in valid if bool(r["flipped"])))
+                key = f"layer={L}|magnitude={float(mag):.6g}|loc={loc}"
+                summary["by_condition"][key] = {
+                    "n_total": int(len(rows)),
+                    "n_valid_choices": int(len(valid)),
+                    "n_flipped": n_flip,
+                    "flip_rate": float(n_flip / len(valid)) if valid else float("nan"),
+                }
+
+    return out_path, summary
 
 
 def default_metric_name(target: str) -> str:
