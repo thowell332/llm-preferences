@@ -29,11 +29,34 @@ __all__ = [
     "best_layers_summary",
     "plot_probe_results_file",
     "plot_cross_role_generalization_and_utility",
+    "compute_cross_role_activation_similarity_results",
+    "plot_cross_role_generalization_and_activation_similarity_from_results",
+    "plot_cross_role_generalization_and_activation_similarity",
     "role_utility_matrix",
     "utility_similarity_from_vectors",
     "pairwise_metric_matrix",
     "artifact_paths",
 ]
+
+
+_ROLE_LABELS: Dict[str, str] = {
+    "emergency_medicine_physician_working_at_a_hospital": "Emergency doctor",
+    "military_officer_in_active_duty": "Military officer",
+    "corporate_executive_at_a_fortune_500_company": "Corporate executive",
+    "union_worker_at_a_manufacturing_plant": "Union worker",
+    "environmental_activist_working_for_a_non-profit_organization": "Environmental activist",
+    "religious_leader_responsible_for_a_congregation": "Religious leader",
+    "investigative_journalist_working_for_a_respected_newspaper": "Investigative journalist",
+    "software_engineer_working_at_a_technology_startup": "Software engineer",
+    "candidate_for_political_office_running_for_a_local_office": "Political candidate",
+    "lawyer_working_as_a_civil_liberties_advocate": "Civil liberties lawyer",
+    "scientific_researcher_running_a_laboratory_at_a_university": "Scientific researcher",
+    "helpful_assistant": "Helpful assistant",
+}
+
+
+def _canonicalize_role_key(role: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", role).strip("_").lower()
 
 
 def linear_probes_dir(repo_root: Path) -> Path:
@@ -619,6 +642,99 @@ def pairwise_metric_matrix(
     return roles, mat
 
 
+def pairwise_metric_matrix_best_by_cell(
+    probe_results: Mapping[str, Any],
+    metric: str = "r2",
+) -> Tuple[List[str], np.ndarray, np.ndarray]:
+    """
+    Best train-role × test-role metric across available layers.
+
+    Returns ``(roles, best_metric_matrix, best_layer_matrix)`` where each cell picks
+    the best layer for that train/test role pair (maximize most metrics, minimize MSE).
+    """
+    pr = probe_results.get("pairwise_role_metrics")
+    if not pr or "by_layer" not in pr:
+        raise ValueError(
+            "This cross_role JSON has no pairwise_role_metrics (re-run train after upgrading lp/train.py)."
+        )
+    roles = list(pr["roles"])
+    by_layer = pr["by_layer"]
+    layer_ids = sorted(int(k) for k in by_layer.keys())
+    if not layer_ids:
+        raise ValueError("pairwise_role_metrics.by_layer is empty")
+
+    n = len(roles)
+    best_vals = np.full((n, n), np.nan, dtype=np.float64)
+    best_layers = np.full((n, n), np.nan, dtype=np.float64)
+    maximize = metric.lower() != "mse"
+
+    for i, ri in enumerate(roles):
+        for j, rj in enumerate(roles):
+            chosen_v: Optional[float] = None
+            chosen_l: Optional[int] = None
+            for L in layer_ids:
+                cell = by_layer[str(L)].get(ri, {}).get(rj)
+                if not cell:
+                    continue
+                v = float(cell.get(metric, float("nan")))
+                if not np.isfinite(v):
+                    continue
+                if chosen_v is None or (v > chosen_v if maximize else v < chosen_v):
+                    chosen_v = v
+                    chosen_l = L
+            if chosen_v is not None and chosen_l is not None:
+                best_vals[i, j] = chosen_v
+                best_layers[i, j] = float(chosen_l)
+
+    return roles, best_vals, best_layers
+
+
+def best_in_distribution_layer_from_pairwise(
+    probe_results: Mapping[str, Any],
+    metric: str = "r2",
+) -> int:
+    """
+    Single global best layer from in-distribution (diagonal) cross-role performance.
+
+    Selects the layer with best mean diagonal metric across roles
+    (maximize most metrics, minimize MSE).
+    """
+    pr = probe_results.get("pairwise_role_metrics")
+    if not pr or "by_layer" not in pr:
+        raise ValueError(
+            "This cross_role JSON has no pairwise_role_metrics (re-run train after upgrading lp/train.py)."
+        )
+    roles = list(pr["roles"])
+    by_layer = pr["by_layer"]
+    layer_ids = sorted(int(k) for k in by_layer.keys())
+    if not layer_ids:
+        raise ValueError("pairwise_role_metrics.by_layer is empty")
+
+    maximize = metric.lower() != "mse"
+    best_layer: Optional[int] = None
+    best_score: Optional[float] = None
+    for L in layer_ids:
+        blk = by_layer[str(L)]
+        diag_vals: List[float] = []
+        for r in roles:
+            cell = blk.get(r, {}).get(r)
+            if not cell:
+                continue
+            v = float(cell.get(metric, float("nan")))
+            if np.isfinite(v):
+                diag_vals.append(v)
+        if not diag_vals:
+            continue
+        score = float(np.mean(diag_vals))
+        if best_score is None or (score > best_score if maximize else score < best_score):
+            best_score = score
+            best_layer = L
+
+    if best_layer is None:
+        raise ValueError(f"No finite diagonal values found for metric={metric!r}")
+    return int(best_layer)
+
+
 def plot_cross_role_generalization_and_utility(
     cross_role_results_path: Path,
     *,
@@ -626,6 +742,8 @@ def plot_cross_role_generalization_and_utility(
     model_key: str,
     options_rel: str,
     layer: Optional[int] = None,
+    best_layer_per_pair: bool = False,
+    best_layer_global_in_distribution: bool = False,
     gen_metric: str = "r2",
     similarity_metric: str = "correlation",
     role_display: Optional[Callable[[str], str]] = None,
@@ -639,6 +757,9 @@ def plot_cross_role_generalization_and_utility(
     3. Scatter of off-diagonal pairs: utility similarity vs probe metric, with Pearson r.
 
     ``layer`` defaults to the best layer by mean leave-one-role-out ``gen_metric`` on the same JSON.
+    If ``best_layer_per_pair=True``, each train/test pair uses its own best layer.
+    If ``best_layer_global_in_distribution=True``, choose a single global layer by
+    best mean in-distribution (diagonal) performance and use it for all pairs.
     """
     import matplotlib.pyplot as plt
     from scipy import stats
@@ -648,12 +769,43 @@ def plot_cross_role_generalization_and_utility(
     if data.get("probe_mode") != "cross_role":
         raise ValueError("Expected a cross_role probe_results JSON")
 
-    if layer is None:
-        summ = best_layers_summary(cross_role_results_path, primary_metric=gen_metric if gen_metric != "mse" else None)
-        layer = int(summ["best_layer_primary"])
+    if best_layer_per_pair and best_layer_global_in_distribution:
+        raise ValueError("Choose only one: best_layer_per_pair or best_layer_global_in_distribution.")
 
-    roles, gen_mat = pairwise_metric_matrix(data, layer, gen_metric)
-    labels = [role_display(r) if role_display else r for r in roles]
+    if best_layer_per_pair:
+        roles, gen_mat, best_layer_mat = pairwise_metric_matrix_best_by_cell(data, gen_metric)
+        layer_title = "best layer per role pair"
+        layer_strategy = "best_per_pair"
+    elif best_layer_global_in_distribution:
+        layer = best_in_distribution_layer_from_pairwise(data, gen_metric)
+        roles, gen_mat = pairwise_metric_matrix(data, layer, gen_metric)
+        best_layer_mat = None
+        layer_title = f"Layer {layer}"
+        layer_strategy = "global_best_in_distribution"
+        print(f"Using chosen layer: {layer} (global best in-distribution, metric={gen_metric})")
+    else:
+        if layer is None:
+            summ = best_layers_summary(
+                cross_role_results_path, primary_metric=gen_metric if gen_metric != "mse" else None
+            )
+            layer = int(summ["best_layer_primary"])
+        roles, gen_mat = pairwise_metric_matrix(data, layer, gen_metric)
+        best_layer_mat = None
+        layer_title = f"layer {layer}"
+        layer_strategy = "single_layer"
+        print(f"Using chosen layer: {layer} (single-layer mode, metric={gen_metric})")
+    if role_display:
+        labels = [role_display(r) for r in roles]
+    else:
+        role_labels_by_key = {_canonicalize_role_key(k): v for k, v in _ROLE_LABELS.items()}
+        missing_labels = [r for r in roles if _canonicalize_role_key(r) not in role_labels_by_key]
+        if missing_labels:
+            raise KeyError(
+                "Missing role label mapping(s) for: "
+                + ", ".join(sorted(missing_labels))
+                + ". Add these to _ROLE_LABELS or pass role_display=..."
+            )
+        labels = [role_labels_by_key[_canonicalize_role_key(r)] for r in roles]
 
     opt_path = (linear_probes_dir(repo_root) / options_rel).resolve()
     _, util_mat = role_utility_matrix(
@@ -689,14 +841,6 @@ def plot_cross_role_generalization_and_utility(
         ax.set_title(title)
         fig = ax.figure
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        for i in range(n_r):
-            for j in range(n_c):
-                v = mat[i, j]
-                if not np.isfinite(v):
-                    t = ""
-                else:
-                    t = f"{v:.2f}"
-                ax.text(j, i, t, ha="center", va="center", color="0.05", fontsize=8)
         ax.set_xticks(np.arange(n_c), minor=True)
         ax.set_yticks(np.arange(n_r), minor=True)
         ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.25)
@@ -713,7 +857,7 @@ def plot_cross_role_generalization_and_utility(
         gen_mat,
         labels,
         labels,
-        title=f"Pairwise {gen_metric} @ layer {layer}\n(train row → test column)",
+        title=f"Probe Generalization Between Roles\n({layer_title})",
         cmap="viridis",
         vmin=vmin_g,
         vmax=vmax_g,
@@ -754,18 +898,391 @@ def plot_cross_role_generalization_and_utility(
     fig3, ax3 = plt.subplots(figsize=(6.0, 5.0))
     ax3.scatter(x_arr, y_arr, alpha=0.85, edgecolors="k", linewidths=0.3)
     if x_arr.size >= 2 and np.std(x_arr) > 1e-12 and np.std(y_arr) > 1e-12:
-        r_p, p_v = stats.pearsonr(x_arr, y_arr)
-        ax3.set_title(f"Off-diagonal role pairs (n={x_arr.size})\nPearson r = {r_p:.3f}, p = {p_v:.3g}")
+        lr = stats.linregress(x_arr, y_arr)
+        r2 = float(lr.rvalue**2)
+        x_line = np.linspace(float(np.min(x_arr)), float(np.max(x_arr)), num=200)
+        y_line = lr.intercept + lr.slope * x_line
+        ax3.plot(x_line, y_line, color="tab:blue", linewidth=2.0, label="Linear fit")
+
+        # 95% confidence band for the fitted mean response.
+        n = int(x_arr.size)
+        if n > 2:
+            y_hat = lr.intercept + lr.slope * x_arr
+            residuals = y_arr - y_hat
+            sxx = float(np.sum((x_arr - np.mean(x_arr)) ** 2))
+            if sxx > 1e-12:
+                s_err = float(np.sqrt(np.sum(residuals**2) / (n - 2)))
+                se_fit = s_err * np.sqrt((1.0 / n) + ((x_line - np.mean(x_arr)) ** 2) / sxx)
+                t_crit = float(stats.t.ppf(0.975, n - 2))
+                ci_delta = t_crit * se_fit
+                ax3.fill_between(
+                    x_line,
+                    y_line - ci_delta,
+                    y_line + ci_delta,
+                    color="tab:blue",
+                    alpha=0.18,
+                    linewidth=0.0,
+                    label="95% CI",
+                )
+        ax3.set_title(f"Cross-Role Performance vs. Utility Similarity\nLinear fit $R^2 = {r2:.3f}$")
     else:
-        ax3.set_title(f"Off-diagonal role pairs (n={x_arr.size})")
-    ax3.set_xlabel(f"Utility-vector {similarity_metric}")
-    ax3.set_ylabel(f"Probe {gen_metric} (train → test)")
+        ax3.set_title("Off-diagonal role pairs")
+
+    similarity_label = (
+        "Utility similarity (Pearson correlation)"
+        if similarity_metric.lower() == "correlation"
+        else "Utility similarity (cosine similarity)"
+    )
+    gen_metric_label = {
+        "r2": "R^2",
+        "mse": "MSE",
+        "mae": "MAE",
+    }.get(gen_metric.lower(), gen_metric.upper())
+    ax3.set_xlabel(similarity_label)
+    ax3.set_ylabel(f"Cross-role generalization accuracy")
+    ax3.legend(loc="best", frameon=False)
     ax3.grid(alpha=0.25)
     fig3.tight_layout()
 
     info: Dict[str, Any] = {
         "layer": layer,
+        "best_layer_per_pair": bool(best_layer_per_pair),
+        "best_layer_global_in_distribution": bool(best_layer_global_in_distribution),
+        "layer_strategy": layer_strategy,
         "roles": roles,
         "n_offdiag_pairs": int(x_arr.size),
     }
+    if best_layer_mat is not None:
+        info["best_layer_by_pair"] = best_layer_mat
     return fig1, fig2, fig3, info
+
+
+def compute_cross_role_activation_similarity_results(
+    cross_role_results_path: Path,
+    *,
+    layer: int,
+    output_path: Optional[Path | str] = None,
+    metadata_path: Optional[Path | str] = None,
+    layers_path: Optional[Path | str] = None,
+    activations_path: Optional[Path | str] = None,
+) -> Path:
+    """Compute and save cross-role activation/utility similarity matrices for one layer."""
+    import torch
+
+    cross_role_results_path = Path(cross_role_results_path)
+    data = json.loads(cross_role_results_path.read_text())
+    if data.get("probe_mode") != "cross_role":
+        raise ValueError("Expected a cross_role probe_results JSON")
+
+    save_suffix = str(data.get("save_suffix", "")).strip()
+    if not save_suffix:
+        raise ValueError("cross_role results JSON missing save_suffix")
+    position = str(data.get("position", "gen_first"))
+    prefix = cross_role_results_path.parent / f"linear_probes_{save_suffix}"
+    out_path = (
+        Path(output_path)
+        if output_path is not None
+        else cross_role_results_path.parent / f"linear_probes_{save_suffix}_activation_similarity_layer_{int(layer)}.json"
+    )
+
+    meta_p = Path(metadata_path) if metadata_path is not None else Path(str(prefix) + "_metadata.jsonl")
+    layers_p = Path(layers_path) if layers_path is not None else Path(str(prefix) + "_layers.json")
+    acts_p = (
+        Path(activations_path)
+        if activations_path is not None
+        else Path(str(prefix) + ("_X_gen_first.pt" if position == "gen_first" else "_X_prompt_last.pt"))
+    )
+    for p in (meta_p, layers_p, acts_p):
+        if not p.is_file():
+            raise FileNotFoundError(f"Required artifact not found: {p}")
+
+    with layers_p.open("r") as f:
+        layer_info = json.load(f)
+    layers = [int(x) for x in layer_info["layers"]]
+    if int(layer) not in layers:
+        raise KeyError(f"Layer {layer} not present in {layers_p}")
+    layer_idx = layers.index(int(layer))
+    print(f"Using chosen layer: {layer} (activation-similarity compute)")
+
+    pack = torch.load(acts_p, map_location="cpu")
+    X = pack.get("X")
+    if X is None:
+        raise KeyError(f"Expected key 'X' in activations pack: {acts_p}")
+    X_np = X.numpy() if hasattr(X, "numpy") else np.asarray(X)
+    if X_np.ndim != 3:
+        raise ValueError(f"Expected X with shape (N, L, D), got {tuple(X_np.shape)}")
+    X_layer = np.asarray(X_np[:, layer_idx, :], dtype=np.float64)
+
+    metas: List[Dict[str, Any]] = []
+    with meta_p.open("r") as f:
+        for line in f:
+            metas.append(json.loads(line))
+    if len(metas) != X_layer.shape[0]:
+        raise ValueError(f"Metadata/activation size mismatch: {len(metas)} vs {X_layer.shape[0]}")
+
+    role_option_sum: Dict[str, Dict[str, np.ndarray]] = {}
+    role_option_count: Dict[str, Dict[str, int]] = {}
+    role_utility_sum: Dict[str, Dict[str, float]] = {}
+    role_utility_count: Dict[str, Dict[str, int]] = {}
+    for idx, m in enumerate(metas):
+        role = str(m["role"])
+        oid = str(m["option_id"])
+        role_option_sum.setdefault(role, {})
+        role_option_count.setdefault(role, {})
+        role_utility_sum.setdefault(role, {})
+        role_utility_count.setdefault(role, {})
+        if oid not in role_option_sum[role]:
+            role_option_sum[role][oid] = np.array(X_layer[idx], dtype=np.float64, copy=True)
+            role_option_count[role][oid] = 1
+            role_utility_sum[role][oid] = float(m["utility"])
+            role_utility_count[role][oid] = 1
+        else:
+            role_option_sum[role][oid] += X_layer[idx]
+            role_option_count[role][oid] += 1
+            role_utility_sum[role][oid] += float(m["utility"])
+            role_utility_count[role][oid] += 1
+
+    role_option_vec: Dict[str, Dict[str, np.ndarray]] = {}
+    role_utility_vec: Dict[str, Dict[str, float]] = {}
+    for role, by_option in role_option_sum.items():
+        role_option_vec[role] = {}
+        role_utility_vec[role] = {}
+        for oid, vec_sum in by_option.items():
+            v = vec_sum / max(1, role_option_count[role][oid])
+            nrm = float(np.linalg.norm(v))
+            role_option_vec[role][oid] = (v / nrm) if nrm > 0 else v
+            role_utility_vec[role][oid] = role_utility_sum[role][oid] / max(1, role_utility_count[role][oid])
+
+    roles = list(data["pairwise_role_metrics"]["roles"])
+    n = len(roles)
+    act_sim_mat = np.full((n, n), np.nan, dtype=np.float64)
+    util_sim_mat = np.full((n, n), np.nan, dtype=np.float64)
+    shared_counts = np.zeros((n, n), dtype=np.int32)
+    for i, ri in enumerate(roles):
+        opts_i = role_option_vec.get(ri, {})
+        u_i = role_utility_vec.get(ri, {})
+        for j, rj in enumerate(roles):
+            opts_j = role_option_vec.get(rj, {})
+            u_j = role_utility_vec.get(rj, {})
+            shared = sorted(set(opts_i.keys()).intersection(opts_j.keys()))
+            if not shared:
+                continue
+            cos_vals: List[float] = []
+            ui: List[float] = []
+            uj: List[float] = []
+            for oid in shared:
+                c = float(np.dot(opts_i[oid], opts_j[oid]))
+                if np.isfinite(c):
+                    cos_vals.append(c)
+                if oid in u_i and oid in u_j:
+                    ui.append(float(u_i[oid]))
+                    uj.append(float(u_j[oid]))
+            if cos_vals:
+                act_sim_mat[i, j] = float(np.mean(cos_vals))
+                shared_counts[i, j] = int(len(cos_vals))
+            if len(ui) >= 2 and np.std(ui) > 1e-12 and np.std(uj) > 1e-12:
+                util_sim_mat[i, j] = float(np.corrcoef(np.array(ui), np.array(uj))[0, 1])
+
+    payload = {
+        "cross_role_results_path": str(cross_role_results_path),
+        "save_suffix": save_suffix,
+        "position": position,
+        "layer": int(layer),
+        "roles": roles,
+        "activation_similarity_matrix": act_sim_mat.tolist(),
+        "utility_similarity_matrix": util_sim_mat.tolist(),
+        "shared_option_counts": shared_counts.astype(int).tolist(),
+        "metadata_path": str(meta_p),
+        "layers_path": str(layers_p),
+        "activations_path": str(acts_p),
+    }
+    out_path.write_text(json.dumps(payload, indent=2))
+    print(f"Wrote activation similarity results: {out_path}")
+    return out_path
+
+
+def plot_cross_role_generalization_and_activation_similarity_from_results(
+    cross_role_results_path: Path,
+    activation_similarity_results_path: Path | str,
+    *,
+    gen_metric: str = "r2",
+    role_display: Optional[Callable[[str], str]] = None,
+) -> Tuple[Any, Any, Any, Any, Dict[str, Any]]:
+    """Plot probe generalization vs saved activation/utility similarity results."""
+    import matplotlib.pyplot as plt
+    from scipy import stats
+
+    cross_role_results_path = Path(cross_role_results_path)
+    data = json.loads(cross_role_results_path.read_text())
+    if data.get("probe_mode") != "cross_role":
+        raise ValueError("Expected a cross_role probe_results JSON")
+
+    res = json.loads(Path(activation_similarity_results_path).read_text())
+    layer = int(res["layer"])
+    roles = list(res["roles"])
+    act_sim_mat = np.asarray(res["activation_similarity_matrix"], dtype=np.float64)
+    util_sim_mat = np.asarray(res["utility_similarity_matrix"], dtype=np.float64)
+    shared_counts = np.asarray(res["shared_option_counts"], dtype=np.int32)
+
+    roles_gen, gen_mat = pairwise_metric_matrix(data, layer, gen_metric)
+    if roles_gen != roles:
+        raise ValueError("Role ordering mismatch between cross-role results and activation-similarity results")
+    if role_display:
+        labels = [role_display(r) for r in roles]
+    else:
+        role_labels_by_key = {_canonicalize_role_key(k): v for k, v in _ROLE_LABELS.items()}
+        missing_labels = [r for r in roles if _canonicalize_role_key(r) not in role_labels_by_key]
+        if missing_labels:
+            raise KeyError(
+                "Missing role label mapping(s) for: "
+                + ", ".join(sorted(missing_labels))
+                + ". Add these to _ROLE_LABELS or pass role_display=..."
+            )
+        labels = [role_labels_by_key[_canonicalize_role_key(r)] for r in roles]
+
+    n = len(roles)
+
+    def _heatmap(ax: Any, mat: np.ndarray, *, title: str, cmap: str, vmin: float, vmax: float, xlabel: str, ylabel: str) -> None:
+        im = ax.imshow(mat, cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal")
+        ax.set_xticks(np.arange(n))
+        ax.set_yticks(np.arange(n))
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+        ax.set_yticklabels(labels)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_xticks(np.arange(n), minor=True)
+        ax.set_yticks(np.arange(n), minor=True)
+        ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.25)
+        ax.tick_params(which="minor", bottom=False, left=False)
+
+    fig1, ax1 = plt.subplots(figsize=(max(7.0, 0.55 * n), max(5.5, 0.45 * n)))
+    fin = gen_mat[np.isfinite(gen_mat)]
+    vmin_g = float(fin.min()) if fin.size else 0.0
+    vmax_g = float(fin.max()) if fin.size else 1.0
+    if vmin_g == vmax_g:
+        vmax_g = vmin_g + 1e-6
+    _heatmap(ax1, gen_mat, title=f"Cross-role probe generalization ({gen_metric}) @ layer {layer}", cmap="viridis", vmin=vmin_g, vmax=vmax_g, xlabel="Test role", ylabel="Train role")
+    fig1.tight_layout()
+
+    fig2, ax2 = plt.subplots(figsize=(max(7.0, 0.55 * n), max(5.5, 0.45 * n)))
+    _heatmap(ax2, act_sim_mat, title=f"Average matched-outcome activation cosine similarity @ layer {layer}", cmap="RdYlGn", vmin=-1.0, vmax=1.0, xlabel="Test role", ylabel="Train role")
+    fig2.tight_layout()
+
+    xs: List[float] = []
+    ys: List[float] = []
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            xs.append(float(act_sim_mat[i, j]))
+            ys.append(float(gen_mat[i, j]))
+    x_arr = np.array(xs, dtype=np.float64)
+    y_arr = np.array(ys, dtype=np.float64)
+    ok = np.isfinite(x_arr) & np.isfinite(y_arr)
+    x_arr, y_arr = x_arr[ok], y_arr[ok]
+
+    def _scatter_with_fit(ax: Any, x: np.ndarray, y: np.ndarray, *, title_prefix: str, xlabel: str, ylabel: str) -> float:
+        ax.scatter(x, y, alpha=0.85, edgecolors="k", linewidths=0.3)
+        r2 = float("nan")
+        if x.size >= 2 and np.std(x) > 1e-12 and np.std(y) > 1e-12:
+            lr = stats.linregress(x, y)
+            r2 = float(lr.rvalue**2)
+            x_line = np.linspace(float(np.min(x)), float(np.max(x)), num=200)
+            y_line = lr.intercept + lr.slope * x_line
+            ax.plot(x_line, y_line, color="tab:blue", linewidth=2.0, label="Linear fit")
+            if x.size > 2:
+                y_hat = lr.intercept + lr.slope * x
+                residuals = y - y_hat
+                sxx = float(np.sum((x - np.mean(x)) ** 2))
+                if sxx > 1e-12:
+                    s_err = float(np.sqrt(np.sum(residuals**2) / (x.size - 2)))
+                    se_fit = s_err * np.sqrt((1.0 / x.size) + ((x_line - np.mean(x)) ** 2) / sxx)
+                    t_crit = float(stats.t.ppf(0.975, x.size - 2))
+                    d = t_crit * se_fit
+                    ax.fill_between(x_line, y_line - d, y_line + d, color="tab:blue", alpha=0.18, label="95% CI")
+            ax.set_title(f"{title_prefix}\nLinear fit $R^2$ = {r2:.3f}")
+        else:
+            ax.set_title(title_prefix)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.legend(loc="best", frameon=False)
+        ax.grid(alpha=0.25)
+        return r2
+
+    fig3, ax3 = plt.subplots(figsize=(6.0, 5.0))
+    r2_gen_act = _scatter_with_fit(
+        ax3,
+        x_arr,
+        y_arr,
+        title_prefix="Cross-role performance vs activation similarity",
+        xlabel="Activation similarity (average matched-outcome cosine)",
+        ylabel="Cross-role generalization",
+    )
+    fig3.tight_layout()
+
+    xu: List[float] = []
+    yu: List[float] = []
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            xu.append(float(act_sim_mat[i, j]))
+            yu.append(float(util_sim_mat[i, j]))
+    xu_arr = np.array(xu, dtype=np.float64)
+    yu_arr = np.array(yu, dtype=np.float64)
+    oku = np.isfinite(xu_arr) & np.isfinite(yu_arr)
+    xu_arr, yu_arr = xu_arr[oku], yu_arr[oku]
+
+    fig4, ax4 = plt.subplots(figsize=(6.0, 5.0))
+    r2_act_util = _scatter_with_fit(
+        ax4,
+        xu_arr,
+        yu_arr,
+        title_prefix="Activation similarity vs utility similarity",
+        xlabel="Activation similarity (average matched-outcome cosine)",
+        ylabel="Utility similarity (Pearson correlation)",
+    )
+    fig4.tight_layout()
+
+    info: Dict[str, Any] = {
+        "layer": int(layer),
+        "roles": roles,
+        "n_offdiag_pairs_gen_vs_act": int(x_arr.size),
+        "n_offdiag_pairs_act_vs_util": int(xu_arr.size),
+        "r2_gen_vs_act": r2_gen_act,
+        "r2_act_vs_util": r2_act_util,
+        "shared_option_counts": shared_counts,
+    }
+    return fig1, fig2, fig3, fig4, info
+
+
+def plot_cross_role_generalization_and_activation_similarity(
+    cross_role_results_path: Path,
+    *,
+    layer: int,
+    gen_metric: str = "r2",
+    role_display: Optional[Callable[[str], str]] = None,
+    metadata_path: Optional[Path | str] = None,
+    layers_path: Optional[Path | str] = None,
+    activations_path: Optional[Path | str] = None,
+    activation_similarity_results_path: Optional[Path | str] = None,
+) -> Tuple[Any, Any, Any, Any, Dict[str, Any]]:
+    """
+    Convenience wrapper: compute cached activation-similarity results, then plot from that file.
+    """
+    out_path = compute_cross_role_activation_similarity_results(
+        cross_role_results_path,
+        layer=layer,
+        output_path=activation_similarity_results_path,
+        metadata_path=metadata_path,
+        layers_path=layers_path,
+        activations_path=activations_path,
+    )
+    return plot_cross_role_generalization_and_activation_similarity_from_results(
+        cross_role_results_path,
+        out_path,
+        gen_metric=gen_metric,
+        role_display=role_display,
+    )
