@@ -656,7 +656,7 @@ def run_forced_choice_dual_probe_pilot(
     layers: str = "all",
     max_model_len: int = 1024,
     max_examples: int = 0,
-    backend: str = "hf",
+    backend: str = "vllm",
     probe_mode: str = "all",
     test_fraction: float = 0.2,
     seed: int = 42,
@@ -825,6 +825,27 @@ def _parse_forced_choice_response(text: str) -> Optional[str]:
     return None
 
 
+def _hf_loader_args_namespace(
+    *,
+    trust_remote_code: bool,
+    force_cpu: bool = False,
+    hf_device_map_auto: bool = False,
+    hf_direct_gpu_load: bool = False,
+    hf_bnb_8bit: bool = False,
+    attn_implementation: Optional[str] = None,
+) -> Any:
+    import argparse
+
+    return argparse.Namespace(
+        trust_remote_code=bool(trust_remote_code),
+        force_cpu=bool(force_cpu),
+        hf_device_map_auto=bool(hf_device_map_auto),
+        hf_direct_gpu_load=bool(hf_direct_gpu_load),
+        hf_bnb_8bit=bool(hf_bnb_8bit),
+        attn_implementation=attn_implementation,
+    )
+
+
 def _flatten_hierarchical_options_local(data: Any) -> List[str]:
     if isinstance(data, str):
         return [data]
@@ -881,6 +902,7 @@ def run_forced_choice_probe_steering(
     layers: Sequence[int],
     magnitudes: Sequence[float],
     intervene_on: Sequence[str] = ("option_a", "option_b"),
+    backend: str = "hf",
     max_model_len: int = 1024,
     max_new_tokens: int = 3,
     ridge_lambda: float = 1.0,
@@ -904,6 +926,8 @@ def run_forced_choice_probe_steering(
     locs = [str(x) for x in intervene_on]
     if any(loc not in allowed_locations for loc in locs):
         raise ValueError(f"intervene_on must be subset of {sorted(allowed_locations)}")
+    if str(backend).lower() != "hf":
+        raise ValueError("run_forced_choice_probe_steering currently supports backend='hf' only.")
 
     lp_dir = linear_probes_dir(repo_root)
     pfx = lp_dir / save_dir / f"linear_probes_{save_suffix}"
@@ -964,17 +988,14 @@ def run_forced_choice_probe_steering(
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     dtype = torch.float16
-    dummy_args = type(
-        "DummyArgs",
-        (),
-        {
-            "force_cpu": False,
-            "hf_device_map_auto": False,
-            "hf_direct_gpu_load": False,
-            "hf_bnb_8bit": False,
-            "trust_remote_code": bool(trust_remote_code),
-        },
-    )()
+    dummy_args = _hf_loader_args_namespace(
+        trust_remote_code=trust_remote_code,
+        force_cpu=False,
+        hf_device_map_auto=False,
+        hf_direct_gpu_load=False,
+        hf_bnb_8bit=False,
+        attn_implementation=None,
+    )
     fp_kwargs, move_to_cuda_after_load = build_hf_from_pretrained_kwargs(dummy_args, dtype, model_path)
     model = load_hf_causal_lm(model_path, fp_kwargs)
     model = finalize_hf_model_on_device(model, move_to_cuda_after_load)
