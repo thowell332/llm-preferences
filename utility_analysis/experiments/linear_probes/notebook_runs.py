@@ -33,6 +33,7 @@ __all__ = [
     "plot_cross_role_generalization_and_activation_similarity_from_results",
     "plot_cross_role_generalization_and_activation_similarity",
     "rating_pairwise_preference_accuracy",
+    "plot_rating_pairwise_preference_heatmap",
     "role_utility_matrix",
     "utility_similarity_from_vectors",
     "pairwise_metric_matrix",
@@ -268,6 +269,99 @@ def rating_pairwise_preference_accuracy(
         }
 
     return out
+
+
+def plot_rating_pairwise_preference_heatmap(
+    metadata_jsonl_path: Path | str,
+    *,
+    role_display: Optional[Callable[[str], str]] = None,
+) -> Tuple[Any, Dict[str, Any]]:
+    """
+    Heatmap of pairwise preference accuracy using ratings as predictors.
+
+    Cell (i, j): use role i ratings as predicted scores and role j utilities as
+    ground truth over shared option_ids, then compute pairwise preference accuracy.
+    """
+    import matplotlib.pyplot as plt
+
+    metadata_jsonl_path = Path(metadata_jsonl_path)
+    if not metadata_jsonl_path.is_file():
+        raise FileNotFoundError(f"metadata JSONL not found: {metadata_jsonl_path}")
+
+    rows: List[Dict[str, Any]] = []
+    with metadata_jsonl_path.open("r") as f:
+        for line in f:
+            if line.strip():
+                rows.append(json.loads(line))
+    if not rows:
+        raise ValueError(f"No rows found in metadata JSONL: {metadata_jsonl_path}")
+
+    role_to_rating: Dict[str, Dict[str, float]] = {}
+    role_to_utility: Dict[str, Dict[str, float]] = {}
+    for r in rows:
+        role = str(r.get("role", ""))
+        oid = str(r.get("option_id", ""))
+        util = r.get("utility", None)
+        rating = r.get("rating", None)
+        role_to_utility.setdefault(role, {})
+        role_to_rating.setdefault(role, {})
+        if util is not None:
+            role_to_utility[role][oid] = float(util)
+        if rating is not None:
+            role_to_rating[role][oid] = float(rating)
+
+    roles = sorted(role_to_utility.keys())
+    n = len(roles)
+    mat = np.full((n, n), np.nan, dtype=np.float64)
+    shared_counts = np.zeros((n, n), dtype=np.int32)
+
+    for i, train_role in enumerate(roles):
+        rmap = role_to_rating.get(train_role, {})
+        for j, test_role in enumerate(roles):
+            umap = role_to_utility.get(test_role, {})
+            shared = sorted(set(rmap.keys()).intersection(umap.keys()))
+            if len(shared) < 2:
+                continue
+            y_pred = np.array([rmap[oid] for oid in shared], dtype=np.float64)
+            y_true = np.array([umap[oid] for oid in shared], dtype=np.float64)
+            mat[i, j] = _pairwise_preference_accuracy(y_true, y_pred)
+            shared_counts[i, j] = int(len(shared))
+
+    if role_display:
+        labels = [role_display(r) for r in roles]
+    else:
+        role_labels_by_key = {_canonicalize_role_key(k): v for k, v in _ROLE_LABELS.items()}
+        missing_labels = [r for r in roles if _canonicalize_role_key(r) not in role_labels_by_key]
+        if missing_labels:
+            raise KeyError(
+                "Missing role label mapping(s) for: "
+                + ", ".join(sorted(missing_labels))
+                + ". Add these to _ROLE_LABELS or pass role_display=..."
+            )
+        labels = [role_labels_by_key[_canonicalize_role_key(r)] for r in roles]
+
+    fig, ax = plt.subplots(figsize=(max(7.0, 0.55 * n), max(5.5, 0.45 * n)))
+    im = ax.imshow(mat, cmap="viridis", vmin=0.0, vmax=1.0, aspect="equal")
+    ax.set_xticks(np.arange(n))
+    ax.set_yticks(np.arange(n))
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Test role (utility ground truth)")
+    ax.set_ylabel("Train role (rating predictor)")
+    ax.set_title("Pairwise preference accuracy from ratings")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_xticks(np.arange(n), minor=True)
+    ax.set_yticks(np.arange(n), minor=True)
+    ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.25)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    fig.tight_layout()
+
+    info: Dict[str, Any] = {
+        "roles": roles,
+        "pairwise_pref_acc_matrix": mat,
+        "shared_option_counts": shared_counts,
+    }
+    return fig, info
 
 
 def _collect_argv(
