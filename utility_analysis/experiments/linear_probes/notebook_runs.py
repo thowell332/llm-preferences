@@ -825,6 +825,52 @@ def _parse_forced_choice_response(text: str) -> Optional[str]:
     return None
 
 
+def _flatten_hierarchical_options_local(data: Any) -> List[str]:
+    if isinstance(data, str):
+        return [data]
+    if isinstance(data, list):
+        out: List[str] = []
+        for x in data:
+            out.extend(_flatten_hierarchical_options_local(x))
+        return out
+    if isinstance(data, dict):
+        out: List[str] = []
+        for v in data.values():
+            out.extend(_flatten_hierarchical_options_local(v))
+        return out
+    raise ValueError(f"Unsupported options structure item type: {type(data)}")
+
+
+def _load_options_local(options_path: str) -> List[Dict[str, Any]]:
+    raw: Any = json.loads(Path(options_path).read_text())
+    if isinstance(raw, list):
+        opts = raw
+    elif isinstance(raw, dict):
+        opts = _flatten_hierarchical_options_local(raw)
+    else:
+        raise ValueError(f"Invalid options type: {type(raw)}")
+    return [{"id": str(i), "description": str(desc)} for i, desc in enumerate(opts)]
+
+
+def _resolve_model_paths_local(repo_root: Path, model_key: str) -> Tuple[str, Optional[str]]:
+    import yaml
+
+    models_yaml = (Path(repo_root).resolve() / "utility_analysis" / "models.yaml").resolve()
+    if not models_yaml.is_file():
+        alt = (Path(repo_root).resolve() / "models.yaml").resolve()
+        if alt.is_file():
+            models_yaml = alt
+    data = yaml.safe_load(models_yaml.read_text())
+    if model_key not in data:
+        raise ValueError(f"Unknown model_key {model_key!r} in {models_yaml}")
+    cfg = data[model_key]
+    model_path = cfg.get("path") or cfg.get("model_name")
+    tokenizer_path = cfg.get("tokenizer_path")
+    if not model_path:
+        raise ValueError(f"Model {model_key!r} has no path/model_name in {models_yaml}")
+    return str(model_path), (str(tokenizer_path) if tokenizer_path else None)
+
+
 def run_forced_choice_probe_steering(
     repo_root: Path,
     *,
@@ -852,7 +898,6 @@ def run_forced_choice_probe_steering(
     from transformers import AutoTokenizer
     from lp.hf_loader import build_hf_from_pretrained_kwargs, finalize_hf_model_on_device, load_hf_causal_lm
     from lp.metrics import ridge_fit_closed_form
-    from lp.data import load_options, models_yaml_path_for_experiment, resolve_model_paths
 
     allowed_locations = {"option_a", "option_b"}
     locs = [str(x) for x in intervene_on]
@@ -870,7 +915,7 @@ def run_forced_choice_probe_steering(
             raise FileNotFoundError(f"Missing required forced-choice artifact: {p}")
 
     options_path_resolved = _resolve_input_path(repo_root, options_path) or options_path
-    options = load_options(str(options_path_resolved))
+    options = _load_options_local(str(options_path_resolved))
     option_desc_by_id = {str(o["id"]): str(o["description"]) for o in options}
 
     metas: List[Dict[str, Any]] = []
@@ -913,7 +958,7 @@ def run_forced_choice_probe_steering(
         w_a[L] = wa / na
         w_b[L] = wb / nb
 
-    model_path, tokenizer_path = resolve_model_paths(models_yaml_path_for_experiment(), model_key)
+    model_path, tokenizer_path = _resolve_model_paths_local(repo_root, model_key)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
