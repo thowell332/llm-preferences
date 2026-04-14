@@ -453,6 +453,21 @@ def _collect_argv(
     return argv
 
 
+def _resolve_input_path(repo_root: Path, p: Optional[str]) -> Optional[str]:
+    if p is None:
+        return None
+    s = str(p).strip()
+    if not s:
+        return None
+    pp = Path(s).expanduser()
+    if pp.is_absolute():
+        return str(pp)
+    root_candidate = (Path(repo_root).resolve() / pp).resolve()
+    if root_candidate.exists():
+        return str(root_candidate)
+    return s
+
+
 def _train_argv(
     *,
     model_key: str,
@@ -532,16 +547,21 @@ def run_collect_then_train(
     if backend == "hf":
         extra_env["CUDA_LAUNCH_BLOCKING"] = "1"
 
+    options_path_resolved = _resolve_input_path(repo_root, options_path) or options_path
+    utilities_path_resolved = _resolve_input_path(repo_root, utilities_path)
+    utilities_dir_resolved = _resolve_input_path(repo_root, utilities_dir)
+    roles_config_path_resolved = _resolve_input_path(repo_root, roles_config_path)
+
     cargv = _collect_argv(
         model_key=model_key,
         save_dir=save_dir,
         save_suffix=save_suffix,
-        options_path=options_path,
-        utilities_path=utilities_path,
-        utilities_dir=utilities_dir,
+        options_path=options_path_resolved,
+        utilities_path=utilities_path_resolved,
+        utilities_dir=utilities_dir_resolved,
         roles=roles,
         roleset=roleset,
-        roles_config_path=roles_config_path,
+        roles_config_path=roles_config_path_resolved,
         layers=layers,
         max_new_tokens_for_parsing=max_new_tokens_for_parsing,
         max_model_len=max_model_len,
@@ -644,16 +664,21 @@ def run_forced_choice_dual_probe_pilot(
     if backend == "hf":
         extra_env["CUDA_LAUNCH_BLOCKING"] = "1"
 
+    options_path_resolved = _resolve_input_path(repo_root, options_path) or options_path
+    utilities_path_resolved = _resolve_input_path(repo_root, utilities_path)
+    utilities_dir_resolved = _resolve_input_path(repo_root, utilities_dir)
+    roles_config_path_resolved = _resolve_input_path(repo_root, roles_config_path)
+
     cargv = _collect_argv(
         model_key=model_key,
         save_dir=save_dir,
         save_suffix=save_suffix,
-        options_path=options_path,
-        utilities_path=utilities_path,
-        utilities_dir=utilities_dir,
+        options_path=options_path_resolved,
+        utilities_path=utilities_path_resolved,
+        utilities_dir=utilities_dir_resolved,
         roles=roles,
         roleset=roleset,
-        roles_config_path=roles_config_path,
+        roles_config_path=roles_config_path_resolved,
         layers=layers,
         max_new_tokens_for_parsing=2,
         max_model_len=max_model_len,
