@@ -32,6 +32,7 @@ __all__ = [
     "compute_cross_role_activation_similarity_results",
     "plot_cross_role_generalization_and_activation_similarity_from_results",
     "plot_cross_role_generalization_and_activation_similarity",
+    "rating_pairwise_preference_accuracy",
     "role_utility_matrix",
     "utility_similarity_from_vectors",
     "pairwise_metric_matrix",
@@ -161,6 +162,112 @@ def artifact_paths(repo_root: Path, save_dir: str, save_suffix: str) -> Dict[str
         "x_prompt_last_pt": Path(str(pfx) + "_X_prompt_last.pt"),
         "run_metadata_json": Path(str(pfx) + "_run_metadata.json"),
     }
+
+
+def _pairwise_preference_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = np.asarray(y_true, dtype=np.float64).ravel()
+    y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
+    n = len(y_true)
+    if n < 2:
+        return float("nan")
+    i, j = np.triu_indices(n, k=1)
+    dt = y_true[i] - y_true[j]
+    dp = y_pred[i] - y_pred[j]
+    mask = dt != 0
+    if not np.any(mask):
+        return float("nan")
+    dt = dt[mask]
+    dp = dp[mask]
+    agree = ((dt > 0) & (dp > 0)) | ((dt < 0) & (dp < 0))
+    return float(agree.mean())
+
+
+def rating_pairwise_preference_accuracy(
+    metadata_jsonl_path: Path | str,
+    *,
+    probe_results_path: Optional[Path | str] = None,
+    probe_layer: Optional[int] = None,
+    by_role: bool = False,
+) -> Dict[str, Any]:
+    """
+    Pairwise preference accuracy using collected model ratings as predictors.
+
+    Ground truth is utility; prediction is parsed rating. Unparseable ratings are dropped.
+    If ``probe_results_path`` is passed, include a probe comparison value.
+    """
+    metadata_jsonl_path = Path(metadata_jsonl_path)
+    if not metadata_jsonl_path.is_file():
+        raise FileNotFoundError(f"metadata JSONL not found: {metadata_jsonl_path}")
+
+    rows: List[Dict[str, Any]] = []
+    with metadata_jsonl_path.open("r") as f:
+        for line in f:
+            if line.strip():
+                rows.append(json.loads(line))
+    if not rows:
+        raise ValueError(f"No rows found in metadata JSONL: {metadata_jsonl_path}")
+
+    def _compute_for_subset(subset: List[Dict[str, Any]]) -> Dict[str, Any]:
+        y_true: List[float] = []
+        y_pred: List[float] = []
+        n_unparseable = 0
+        for r in subset:
+            rating = r.get("rating", None)
+            util = r.get("utility", None)
+            if rating is None:
+                n_unparseable += 1
+                continue
+            y_true.append(float(util))
+            y_pred.append(float(rating))
+        y_t = np.asarray(y_true, dtype=np.float64)
+        y_p = np.asarray(y_pred, dtype=np.float64)
+        return {
+            "n_total": int(len(subset)),
+            "n_parseable": int(len(y_t)),
+            "n_unparseable": int(n_unparseable),
+            "parse_rate": float(len(y_t) / len(subset)) if subset else float("nan"),
+            "pairwise_pref_acc_from_ratings": _pairwise_preference_accuracy(y_t, y_p),
+        }
+
+    overall = _compute_for_subset(rows)
+    out: Dict[str, Any] = {
+        "metadata_jsonl_path": metadata_jsonl_path,
+        "overall": overall,
+    }
+
+    if by_role:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            grouped.setdefault(str(r.get("role", "")), []).append(r)
+        out["by_role"] = {role: _compute_for_subset(subset) for role, subset in sorted(grouped.items())}
+
+    if probe_results_path is not None:
+        probe_results_path = Path(probe_results_path)
+        pdata = json.loads(probe_results_path.read_text())
+        probe_mode = str(pdata.get("probe_mode", "all"))
+        if probe_mode != "all":
+            raise ValueError("Probe comparison currently expects probe_mode='all' results JSON.")
+        mbl = pdata.get("metrics_by_layer", {})
+        if not mbl:
+            raise ValueError("No metrics_by_layer found in probe results.")
+        if probe_layer is None:
+            layers = sorted(int(k) for k in mbl.keys())
+            vals = np.array([float(mbl[str(L)]["pairwise_pref_acc"]) for L in layers], dtype=np.float64)
+            probe_layer = int(layers[int(np.nanargmax(vals))])
+        lk = str(int(probe_layer))
+        if lk not in mbl:
+            raise KeyError(f"Layer {probe_layer} not found in probe metrics_by_layer")
+        out["probe_comparison"] = {
+            "probe_results_path": probe_results_path,
+            "probe_layer": int(probe_layer),
+            "probe_pairwise_pref_acc": float(mbl[lk]["pairwise_pref_acc"]),
+            "rating_pairwise_pref_acc": float(overall["pairwise_pref_acc_from_ratings"]),
+            "delta_rating_minus_probe": float(
+                overall["pairwise_pref_acc_from_ratings"] - float(mbl[lk]["pairwise_pref_acc"])
+            ),
+        }
+
+    return out
 
 
 def _collect_argv(
