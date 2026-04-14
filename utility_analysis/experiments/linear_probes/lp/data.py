@@ -178,6 +178,31 @@ def parse_rating_from_first_token_text(text: str) -> Optional[int]:
     return None
 
 
+def parse_rating_from_first_two_token_texts(first_token_text: str, second_token_text: str) -> Optional[int]:
+    """
+    Parse rating using at most the first two generated token texts.
+
+    Rules:
+    - If first token does not start with a digit -> unparseable.
+    - If first token starts with ``10`` -> 10.
+    - If first token starts with ``1`` and second token starts with ``0`` -> 10.
+    - Otherwise if first token starts with ``1``-``9`` -> that digit.
+    """
+    if first_token_text is None:
+        return None
+    s1 = str(first_token_text).strip()
+    s2 = str(second_token_text or "").strip()
+    if not s1 or not s1[0].isdigit():
+        return None
+    if s1.startswith("10"):
+        return 10
+    if s1[0] == "1" and s2.startswith("0"):
+        return 10
+    if s1[0] in "123456789":
+        return int(s1[0])
+    return None
+
+
 @dataclass
 class ExampleMeta:
     role: str
