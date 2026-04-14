@@ -120,6 +120,71 @@ def residual_stream_at_positions(
     return json.dumps(gen_ids), None, residuals_prompt_last, residuals_gen_first
 
 
+@torch.no_grad()
+def residual_stream_at_prompt_positions(
+    model: AutoModelForCausalLM,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    layers: Sequence[int],
+    positions: Sequence[int],
+) -> Dict[int, Dict[int, torch.Tensor]]:
+    """
+    Capture residual stream vectors at specified prompt token positions.
+
+    Returns:
+      position_to_layer_to_vec[position][layer] -> [hidden_dim]
+    """
+
+    def transformer_blocks(m: AutoModelForCausalLM) -> Sequence[Any]:
+        if hasattr(m, "model") and hasattr(m.model, "layers"):
+            return m.model.layers
+        if hasattr(m, "transformer") and hasattr(m.transformer, "h"):
+            return m.transformer.h
+        raise ValueError(
+            "Could not locate transformer block modules on the model. "
+            "Expected something like model.model.layers (Llama) or model.transformer.h."
+        )
+
+    blocks = transformer_blocks(model)
+    layers_set = list(layers)
+    pos_list = [int(p) for p in positions]
+    seq_len = int(input_ids.shape[1])
+    if any(p < 0 or p >= seq_len for p in pos_list):
+        raise ValueError(f"Prompt position out of bounds for seq_len={seq_len}: {pos_list}")
+    max_requested_layer = max(layers_set) if len(layers_set) > 0 else -1
+    if max_requested_layer >= len(blocks):
+        raise ValueError(f"Requested layer id {max_requested_layer}, but model has only {len(blocks)} layers.")
+
+    out: Dict[int, Dict[int, torch.Tensor]] = {p: {} for p in pos_list}
+    hooks: List[Any] = []
+    for l in layers_set:
+        def _hook(mod: Any, _inp: Any, layer_out: Any, layer_idx: int = l) -> None:
+            hs = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            if torch.is_tensor(hs):
+                for p in pos_list:
+                    out[p][layer_idx] = hs[0, p, :].detach()
+
+        hooks.append(blocks[l].register_forward_hook(_hook))
+
+    _ = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        use_cache=False,
+        output_hidden_states=False,
+        return_dict=True,
+        num_logits_to_keep=1,
+    )
+
+    for h in hooks:
+        h.remove()
+
+    for p in pos_list:
+        missing = [l for l in layers_set if l not in out[p]]
+        if missing:
+            raise RuntimeError(f"Failed to capture residuals for positions/layers: pos={p} missing_layers={missing}")
+    return out
+
+
 def decode_generation(tokenizer: Any, gen_ids_json: str) -> str:
     gen_ids = json.loads(gen_ids_json)
     return tokenizer.decode(gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)

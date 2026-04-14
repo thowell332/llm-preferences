@@ -7,8 +7,6 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
-
-from lp.data import ExampleMeta
 from lp.metrics import (
     pairwise_preference_accuracy,
     r2_score,
@@ -25,20 +23,21 @@ def train(args: argparse.Namespace) -> None:
 
     meta_path = out_prefix + "_metadata.jsonl"
     layers_path = out_prefix + "_layers.json"
-    X_path = out_prefix + ("_X_gen_first.pt" if args.position == "gen_first" else "_X_prompt_last.pt")
+    pos_to_file = {
+        "gen_first": out_prefix + "_X_gen_first.pt",
+        "prompt_last": out_prefix + "_X_prompt_last.pt",
+        "option_a_last": out_prefix + "_X_option_a_last.pt",
+        "option_b_last": out_prefix + "_X_option_b_last.pt",
+    }
+    if args.position not in pos_to_file:
+        raise ValueError(f"Unknown position: {args.position}")
+    X_path = pos_to_file[args.position]
 
-    metas: List[ExampleMeta] = []
+    metas: List[Dict[str, Any]] = []
     with open(meta_path, "r") as f:
         for line in f:
             d = json.loads(line)
-            metas.append(
-                ExampleMeta(
-                    role=d["role"],
-                    option_id=str(d["option_id"]),
-                    rating=d.get("rating"),
-                    utility=float(d["utility"]),
-                )
-            )
+            metas.append(d)
 
     with open(layers_path, "r") as f:
         layer_info = json.load(f)
@@ -47,9 +46,16 @@ def train(args: argparse.Namespace) -> None:
     pack = torch.load(X_path, map_location="cpu")
     X = pack["X"]
 
-    keep = np.ones(len(metas), dtype=bool)
-    if args.target == "rating":
-        keep = np.array([m.rating is not None for m in metas], dtype=bool)
+    target_key = {
+        "utility": "utility",
+        "rating": "rating",
+        "utility_a": "utility_a",
+        "utility_b": "utility_b",
+    }.get(args.target)
+    if target_key is None:
+        raise ValueError(f"Unknown target: {args.target}")
+
+    keep = np.array([m.get(target_key) is not None for m in metas], dtype=bool)
     kept_indices = np.where(keep)[0]
     if len(kept_indices) < 10:
         raise ValueError(f"Too few valid examples after filtering: {len(kept_indices)}")
@@ -57,8 +63,8 @@ def train(args: argparse.Namespace) -> None:
     X = X[kept_indices]
     kept_metas = [metas[i] for i in kept_indices.tolist()]
 
-    y = np.array([m.utility if args.target == "utility" else float(m.rating) for m in kept_metas], dtype=np.float32)
-    roles = np.array([m.role for m in kept_metas], dtype=object)
+    y = np.array([float(m[target_key]) for m in kept_metas], dtype=np.float32)
+    roles = np.array([str(m.get("role", "")) for m in kept_metas], dtype=object)
 
     rng = np.random.RandomState(args.seed)
     n = len(kept_metas)

@@ -38,6 +38,12 @@ def main() -> None:
         help="Generate up to this many tokens to parse rating (activations still taken at first generated token).",
     )
     parser.add_argument(
+        "--prompt_format",
+        choices=["rating", "forced_choice"],
+        default="rating",
+        help="Prompt format for collect stage: single-option rating prompts or forced-choice prompts.",
+    )
+    parser.add_argument(
         "--gpu_memory_utilization",
         type=float,
         default=0.75,
@@ -113,11 +119,16 @@ def main() -> None:
 
     parser.add_argument(
         "--position",
-        choices=["prompt_last", "gen_first"],
+        choices=["prompt_last", "gen_first", "option_a_last", "option_b_last"],
         default="gen_first",
         help="Which activation position to probe.",
     )
-    parser.add_argument("--target", choices=["utility", "rating"], default="utility", help="Regression target.")
+    parser.add_argument(
+        "--target",
+        choices=["utility", "rating", "utility_a", "utility_b"],
+        default="utility",
+        help="Regression target.",
+    )
     parser.add_argument(
         "--probe_mode",
         choices=["all", "per_role", "cross_role"],

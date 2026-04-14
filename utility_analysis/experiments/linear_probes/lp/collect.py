@@ -14,6 +14,7 @@ from transformers import AutoConfig, AutoTokenizer
 
 from lp.activations import (
     hidden_states_from_vllm_output,
+    residual_stream_at_prompt_positions,
     residual_stream_at_positions,
 )
 from lp.data import (
@@ -72,6 +73,52 @@ def _resolve_role_to_utilities(args: argparse.Namespace, roles: List[str]) -> Di
         raise ValueError("Missing utility source: provide --utilities_path or --utilities_dir")
     shared = load_utilities(str(raw_path))
     return {role: shared for role in roles}
+
+
+def _role_with_indefinite_article(role: str) -> str:
+    stripped_role = role.strip()
+    article = "an" if stripped_role[:1].lower() in "aeiou" else "a"
+    return f"{article} {stripped_role}"
+
+
+def _forced_choice_prompt_and_positions(
+    tokenizer: Any,
+    role: str,
+    option_a: str,
+    option_b: str,
+    max_model_len: int,
+) -> tuple[str, int, int]:
+    role_with_article = _role_with_indefinite_article(role)
+    prefix = (
+        f"You are {role_with_article}. "
+        "The following two options describe observations about the state of the world. "
+        "Which implied state of the world would you prefer?:\n\n"
+        "Option A:\n"
+    )
+    middle = "\n\nOption B:\n"
+    suffix = '\n\nPlease respond with only "A" or "B".'
+
+    prompt = prefix + option_a + middle + option_b + suffix
+    enc_full = tokenizer(
+        prompt,
+        return_tensors="pt",
+        add_special_tokens=True,
+        truncation=True,
+        max_length=max_model_len,
+    )
+    full_len = int(enc_full["input_ids"].shape[1])
+
+    prefix_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
+    a_ids = tokenizer(option_a, add_special_tokens=False)["input_ids"]
+    middle_ids = tokenizer(middle, add_special_tokens=False)["input_ids"]
+    b_ids = tokenizer(option_b, add_special_tokens=False)["input_ids"]
+    a_last = len(prefix_ids) + len(a_ids) - 1
+    b_last = len(prefix_ids) + len(a_ids) + len(middle_ids) + len(b_ids) - 1
+    if a_last < 0 or b_last < 0 or a_last >= full_len or b_last >= full_len:
+        raise ValueError(
+            f"Failed to compute in-bounds option end positions (a_last={a_last}, b_last={b_last}, full_len={full_len})"
+        )
+    return prompt, int(a_last), int(b_last)
 
 
 def _vllm_draft_model_config_for_extract_hidden_states(
@@ -389,6 +436,130 @@ def collect_vllm(
         return prompt_last_list, gen_first_list, response_first_token_texts, response_second_token_texts, hidden_dim
 
 
+def collect_hf_forced_choice(
+    args: argparse.Namespace,
+    model_path: str,
+    tokenizer_path: Optional[str],
+    layers: List[int],
+    prompts: List[str],
+    option_a_last_positions: List[int],
+    option_b_last_positions: List[int],
+) -> tuple[List[torch.Tensor], List[torch.Tensor], Optional[int]]:
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    dtype = torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)
+    fp_kwargs, move_to_cuda_after_load = build_hf_from_pretrained_kwargs(args, dtype, model_path)
+    model = load_hf_causal_lm(model_path, fp_kwargs)
+    model = finalize_hf_model_on_device(model, move_to_cuda_after_load)
+
+    xa_list: List[torch.Tensor] = []
+    xb_list: List[torch.Tensor] = []
+    hidden_dim: Optional[int] = None
+    total = len(prompts)
+    for idx, prompt in enumerate(prompts, start=1):
+        enc = tokenizer(
+            prompt,
+            return_tensors="pt",
+            add_special_tokens=True,
+            truncation=True,
+            max_length=args.max_model_len,
+        )
+        input_ids = enc["input_ids"].to(model.device)
+        attention_mask = enc["attention_mask"].to(model.device)
+        pos_a = int(option_a_last_positions[idx - 1])
+        pos_b = int(option_b_last_positions[idx - 1])
+        captured = residual_stream_at_prompt_positions(
+            model=model,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            layers=layers,
+            positions=[pos_a, pos_b],
+        )
+        Xa = torch.stack([captured[pos_a][l].to(dtype=torch.float16) for l in layers], dim=0)
+        Xb = torch.stack([captured[pos_b][l].to(dtype=torch.float16) for l in layers], dim=0)
+        if hidden_dim is None:
+            hidden_dim = int(Xa.shape[1])
+        xa_list.append(Xa.cpu())
+        xb_list.append(Xb.cpu())
+        if args.progress_every and (idx % args.progress_every == 0 or idx == total):
+            print(f"[collect:hf][forced_choice] {idx}/{total} done", flush=True)
+    return xa_list, xb_list, hidden_dim
+
+
+def collect_vllm_forced_choice(
+    args: argparse.Namespace,
+    model_path: str,
+    tokenizer_path: Optional[str],
+    layers: List[int],
+    prompts: List[str],
+    option_a_last_positions: List[int],
+    option_b_last_positions: List[int],
+) -> tuple[List[torch.Tensor], List[torch.Tensor], Optional[int]]:
+    from vllm import LLM, SamplingParams
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    draft_model_config = _vllm_draft_model_config_for_extract_hidden_states(
+        model_path, tokenizer_path, args.trust_remote_code
+    )
+    attention_config = _vllm_attention_config_from_args(args)
+    enforce_eager = bool(getattr(args, "vllm_enforce_eager", True))
+    compilation_config = 0 if bool(getattr(args, "vllm_no_compile", False)) else None
+
+    with tempfile.TemporaryDirectory() as hidden_states_storage:
+        llm_kwargs: Dict[str, Any] = dict(
+            model=model_path,
+            tokenizer=tokenizer_path or model_path,
+            trust_remote_code=args.trust_remote_code,
+            tensor_parallel_size=max(torch.cuda.device_count(), 1),
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            max_model_len=args.max_model_len,
+            enforce_eager=enforce_eager,
+            speculative_config={
+                "method": "extract_hidden_states",
+                "num_speculative_tokens": 1,
+                "draft_model_config": draft_model_config,
+            },
+            kv_transfer_config={
+                "kv_connector": "ExampleHiddenStatesConnector",
+                "kv_role": "kv_producer",
+                "kv_connector_extra_config": {"shared_storage_path": hidden_states_storage},
+            },
+        )
+        if attention_config is not None:
+            llm_kwargs["attention_config"] = attention_config
+        if compilation_config is not None:
+            llm_kwargs["compilation_config"] = compilation_config
+        llm = LLM(**llm_kwargs)
+
+        sp = SamplingParams(temperature=0.0, max_tokens=1)
+        xa_list: List[torch.Tensor] = []
+        xb_list: List[torch.Tensor] = []
+        hidden_dim: Optional[int] = None
+        total = len(prompts)
+        for idx, prompt in enumerate(prompts, start=1):
+            outs = llm.generate([prompt], sp)
+            if not outs:
+                raise RuntimeError("vLLM returned no outputs for prompt")
+            out = outs[0]
+            hs = hidden_states_from_vllm_output(out)
+            if hs is None:
+                raise RuntimeError("vLLM hidden states unavailable after generate()")
+            pos_a = int(option_a_last_positions[idx - 1])
+            pos_b = int(option_b_last_positions[idx - 1])
+            Xa = torch.tensor(np.stack([hs[l, pos_a, :] for l in layers], axis=0), dtype=torch.float16)
+            Xb = torch.tensor(np.stack([hs[l, pos_b, :] for l in layers], axis=0), dtype=torch.float16)
+            if hidden_dim is None:
+                hidden_dim = int(Xa.shape[1])
+            xa_list.append(Xa.cpu())
+            xb_list.append(Xb.cpu())
+            if args.progress_every and (idx % args.progress_every == 0 or idx == total):
+                print(f"[collect:vllm][forced_choice] {idx}/{total} done", flush=True)
+        return xa_list, xb_list, hidden_dim
+
+
 def collect(args: argparse.Namespace) -> None:
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -404,45 +575,105 @@ def collect(args: argparse.Namespace) -> None:
     roles = load_roles(args.roles, args.roleset, args.roles_config_path)
     role_to_utilities = _resolve_role_to_utilities(args, roles)
 
-    metas: List[ExampleMeta] = []
-    prompts: List[str] = []
-    for role in roles:
-        utilities = role_to_utilities[role]
-        for opt in options:
-            if args.max_examples and len(prompts) >= args.max_examples:
-                break
-            option_id = str(opt["id"])
-            if option_id not in utilities:
-                raise ValueError(f"Option id {option_id} missing from utilities.json")
-            prompts.append(RATING_PROMPT_TEMPLATE.format(role=role, option=opt["description"]))
-            metas.append(ExampleMeta(role=role, option_id=option_id, rating=None, utility=float(utilities[option_id])))
-        if args.max_examples and len(prompts) >= args.max_examples:
-            break
-
     print_collect_startup(args, model_path, tokenizer_path, num_layers)
 
-    if args.backend == "hf":
-        (
-            prompt_last_list,
-            gen_first_list,
-            response_first_token_texts,
-            response_second_token_texts,
-            hidden_dim,
-        ) = collect_hf(
-            args, model_path, tokenizer_path, layers, prompts, metas
-        )
-    elif args.backend == "vllm":
-        (
-            prompt_last_list,
-            gen_first_list,
-            response_first_token_texts,
-            response_second_token_texts,
-            hidden_dim,
-        ) = collect_vllm(
-            args, model_path, tokenizer_path, layers, prompts, metas
-        )
+    if args.prompt_format == "rating":
+        metas: List[ExampleMeta] = []
+        prompts: List[str] = []
+        for role in roles:
+            utilities = role_to_utilities[role]
+            for opt in options:
+                if args.max_examples and len(prompts) >= args.max_examples:
+                    break
+                option_id = str(opt["id"])
+                if option_id not in utilities:
+                    raise ValueError(f"Option id {option_id} missing from utilities.json")
+                prompts.append(RATING_PROMPT_TEMPLATE.format(role=role, option=opt["description"]))
+                metas.append(ExampleMeta(role=role, option_id=option_id, rating=None, utility=float(utilities[option_id])))
+            if args.max_examples and len(prompts) >= args.max_examples:
+                break
+
+        if args.backend == "hf":
+            (
+                prompt_last_list,
+                gen_first_list,
+                response_first_token_texts,
+                response_second_token_texts,
+                hidden_dim,
+            ) = collect_hf(args, model_path, tokenizer_path, layers, prompts, metas)
+        elif args.backend == "vllm":
+            (
+                prompt_last_list,
+                gen_first_list,
+                response_first_token_texts,
+                response_second_token_texts,
+                hidden_dim,
+            ) = collect_vllm(args, model_path, tokenizer_path, layers, prompts, metas)
+        else:
+            raise ValueError(f"Unknown backend: {args.backend}")
+    elif args.prompt_format == "forced_choice":
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        prompts_fc: List[str] = []
+        pos_a_list: List[int] = []
+        pos_b_list: List[int] = []
+        meta_rows: List[Dict[str, Any]] = []
+        for role in roles:
+            utilities = role_to_utilities[role]
+            for i in range(len(options)):
+                for j in range(i + 1, len(options)):
+                    if args.max_examples and len(prompts_fc) >= args.max_examples:
+                        break
+                    oa = options[i]
+                    ob = options[j]
+                    for direction in ("original", "flipped"):
+                        if args.max_examples and len(prompts_fc) >= args.max_examples:
+                            break
+                        if direction == "original":
+                            opt_a = oa
+                            opt_b = ob
+                        else:
+                            opt_a = ob
+                            opt_b = oa
+                        aid = str(opt_a["id"])
+                        bid = str(opt_b["id"])
+                        if aid not in utilities or bid not in utilities:
+                            raise ValueError(f"Option ids missing from utilities.json: {aid}, {bid}")
+                        prompt, a_last, b_last = _forced_choice_prompt_and_positions(
+                            tokenizer, role, str(opt_a["description"]), str(opt_b["description"]), args.max_model_len
+                        )
+                        prompts_fc.append(prompt)
+                        pos_a_list.append(a_last)
+                        pos_b_list.append(b_last)
+                        meta_rows.append(
+                            {
+                                "role": role,
+                                "option_a_id": aid,
+                                "option_b_id": bid,
+                                "utility_a": float(utilities[aid]),
+                                "utility_b": float(utilities[bid]),
+                                "direction": direction,
+                            }
+                        )
+                if args.max_examples and len(prompts_fc) >= args.max_examples:
+                    break
+            if args.max_examples and len(prompts_fc) >= args.max_examples:
+                break
+
+        if args.backend == "hf":
+            x_a_list, x_b_list, hidden_dim = collect_hf_forced_choice(
+                args, model_path, tokenizer_path, layers, prompts_fc, pos_a_list, pos_b_list
+            )
+        elif args.backend == "vllm":
+            x_a_list, x_b_list, hidden_dim = collect_vllm_forced_choice(
+                args, model_path, tokenizer_path, layers, prompts_fc, pos_a_list, pos_b_list
+            )
+        else:
+            raise ValueError(f"Unknown backend: {args.backend}")
     else:
-        raise ValueError(f"Unknown backend: {args.backend}")
+        raise ValueError(f"Unknown prompt_format: {args.prompt_format}")
 
     if hidden_dim is None:
         raise RuntimeError("No examples collected.")
@@ -451,45 +682,56 @@ def collect(args: argparse.Namespace) -> None:
     out_prefix = os.path.join(args.save_dir, f"linear_probes_{save_suffix}")
 
     meta_path = out_prefix + "_metadata.jsonl"
-    with open(meta_path, "w") as f:
-        for m in metas:
-            f.write(
-                json.dumps(
-                    {
-                        "role": m.role,
-                        "option_id": m.option_id,
-                        "rating": m.rating,
-                        "utility": m.utility,
-                    }
+    if args.prompt_format == "rating":
+        with open(meta_path, "w") as f:
+            for m in metas:
+                f.write(
+                    json.dumps(
+                        {
+                            "role": m.role,
+                            "option_id": m.option_id,
+                            "rating": m.rating,
+                            "utility": m.utility,
+                        }
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
-
-    responses_path = out_prefix + "_responses.jsonl"
-    with open(responses_path, "w") as f:
-        for m, first_token_text, second_token_text in zip(metas, response_first_token_texts, response_second_token_texts):
-            rec = {
-                "role": m.role,
-                "option_id": m.option_id,
-                "response_first_token_text": first_token_text,
-                "response_second_token_text": second_token_text,
-                "is_parseable": m.rating is not None,
-                "parsed_rating": m.rating,
-            }
-            f.write(json.dumps(rec) + "\n")
+        responses_path = out_prefix + "_responses.jsonl"
+        with open(responses_path, "w") as f:
+            for m, first_token_text, second_token_text in zip(metas, response_first_token_texts, response_second_token_texts):
+                rec = {
+                    "role": m.role,
+                    "option_id": m.option_id,
+                    "response_first_token_text": first_token_text,
+                    "response_second_token_text": second_token_text,
+                    "is_parseable": m.rating is not None,
+                    "parsed_rating": m.rating,
+                }
+                f.write(json.dumps(rec) + "\n")
+    else:
+        with open(meta_path, "w") as f:
+            for row in meta_rows:
+                f.write(json.dumps(row) + "\n")
 
     layers_path = out_prefix + "_layers.json"
     with open(layers_path, "w") as f:
         json.dump({"layers": layers, "num_layers": num_layers, "hidden_dim": hidden_dim}, f, indent=2)
 
-    X_prompt = torch.stack(prompt_last_list, dim=0)
-    X_gen = torch.stack(gen_first_list, dim=0)
-    torch.save({"X": X_prompt, "layers": layers, "position": "prompt_last"}, out_prefix + "_X_prompt_last.pt")
-    torch.save({"X": X_gen, "layers": layers, "position": "gen_first"}, out_prefix + "_X_gen_first.pt")
+    if args.prompt_format == "rating":
+        X_prompt = torch.stack(prompt_last_list, dim=0)
+        X_gen = torch.stack(gen_first_list, dim=0)
+        torch.save({"X": X_prompt, "layers": layers, "position": "prompt_last"}, out_prefix + "_X_prompt_last.pt")
+        torch.save({"X": X_gen, "layers": layers, "position": "gen_first"}, out_prefix + "_X_gen_first.pt")
+    else:
+        X_a = torch.stack(x_a_list, dim=0)
+        X_b = torch.stack(x_b_list, dim=0)
+        torch.save({"X": X_a, "layers": layers, "position": "option_a_last"}, out_prefix + "_X_option_a_last.pt")
+        torch.save({"X": X_b, "layers": layers, "position": "option_b_last"}, out_prefix + "_X_option_b_last.pt")
 
     run_meta: Dict[str, Any] = {
         "experiment": "linear_probes",
         "prompt_template_version": "v1",
+        "prompt_format": args.prompt_format,
         "backend": args.backend,
         "model_key": args.model_key,
         "model_path": model_path,
@@ -499,7 +741,7 @@ def collect(args: argparse.Namespace) -> None:
         "utilities_dir": getattr(args, "utilities_dir", None),
         "roles": roles,
         "layers": layers,
-        "max_new_tokens_for_parsing": 2,
+        "max_new_tokens_for_parsing": 2 if args.prompt_format == "rating" else None,
         "gpu_memory_utilization": args.gpu_memory_utilization if args.backend == "vllm" else None,
         "max_model_len": args.max_model_len if args.backend == "vllm" else None,
         "vllm_enforce_eager": bool(getattr(args, "vllm_enforce_eager", True)) if args.backend == "vllm" else None,
@@ -511,6 +753,10 @@ def collect(args: argparse.Namespace) -> None:
     with open(out_prefix + "_run_metadata.json", "w") as f:
         json.dump(run_meta, f, indent=2)
 
-    print(f"[collect] wrote {len(metas)} examples to {meta_path}")
-    print(f"[collect] wrote first-token responses to {responses_path}")
-    print(f"[collect] wrote activations to {out_prefix}_X_prompt_last.pt and {out_prefix}_X_gen_first.pt")
+    if args.prompt_format == "rating":
+        print(f"[collect] wrote {len(metas)} examples to {meta_path}")
+        print(f"[collect] wrote first-token responses to {responses_path}")
+        print(f"[collect] wrote activations to {out_prefix}_X_prompt_last.pt and {out_prefix}_X_gen_first.pt")
+    else:
+        print(f"[collect] wrote {len(meta_rows)} forced-choice examples to {meta_path}")
+        print(f"[collect] wrote activations to {out_prefix}_X_option_a_last.pt and {out_prefix}_X_option_b_last.pt")

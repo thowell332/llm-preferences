@@ -23,6 +23,7 @@ __all__ = [
     "run_linear_probes",
     "run_collect_then_train",
     "run_train_only",
+    "run_forced_choice_dual_probe_pilot",
     "probe_results_path",
     "existing_probe_results_path",
     "default_metric_name",
@@ -158,9 +159,12 @@ def artifact_paths(repo_root: Path, save_dir: str, save_suffix: str) -> Dict[str
     pfx = lp / save_dir / f"linear_probes_{save_suffix}"
     return {
         "metadata_jsonl": Path(str(pfx) + "_metadata.jsonl"),
+        "responses_jsonl": Path(str(pfx) + "_responses.jsonl"),
         "layers_json": Path(str(pfx) + "_layers.json"),
         "x_gen_first_pt": Path(str(pfx) + "_X_gen_first.pt"),
         "x_prompt_last_pt": Path(str(pfx) + "_X_prompt_last.pt"),
+        "x_option_a_last_pt": Path(str(pfx) + "_X_option_a_last.pt"),
+        "x_option_b_last_pt": Path(str(pfx) + "_X_option_b_last.pt"),
         "run_metadata_json": Path(str(pfx) + "_run_metadata.json"),
     }
 
@@ -386,6 +390,7 @@ def _collect_argv(
     hf_bnb_8bit: bool,
     vllm_no_compile: bool,
     vllm_attention_backend: Optional[str],
+    prompt_format: str = "rating",
 ) -> List[str]:
     argv: List[str] = [
         "--model_key",
@@ -400,6 +405,8 @@ def _collect_argv(
         save_suffix,
         "--options_path",
         options_path,
+        "--prompt_format",
+        prompt_format,
     ]
     if utilities_dir and str(utilities_dir).strip():
         argv.extend(["--utilities_dir", str(utilities_dir)])
@@ -505,6 +512,7 @@ def run_collect_then_train(
     test_fraction: float,
     seed: int,
     ridge_lambda: float,
+    prompt_format: str = "rating",
     trust_remote_code: bool = True,
     force_cpu: bool = False,
     hf_fp16_cuda: bool = True,
@@ -545,6 +553,7 @@ def run_collect_then_train(
         hf_bnb_8bit=hf_bnb_8bit,
         vllm_no_compile=vllm_no_compile,
         vllm_attention_backend=vllm_attention_backend,
+        prompt_format=prompt_format,
     )
     run_linear_probes(repo_root, cargv, extra_env=extra_env or None)
 
@@ -594,6 +603,128 @@ def run_train_only(
     )
     run_linear_probes(repo_root, targv, extra_env=None)
     return probe_results_path(repo_root, save_dir, save_suffix, position, target, probe_mode)
+
+
+def run_forced_choice_dual_probe_pilot(
+    repo_root: Path,
+    *,
+    model_key: str,
+    save_dir: str,
+    save_suffix: str,
+    options_path: str,
+    utilities_path: Optional[str] = None,
+    utilities_dir: Optional[str] = None,
+    roles: Optional[str] = None,
+    roleset: Optional[str] = None,
+    roles_config_path: Optional[str] = None,
+    layers: str = "all",
+    max_model_len: int = 1024,
+    max_examples: int = 0,
+    backend: str = "hf",
+    probe_mode: str = "all",
+    test_fraction: float = 0.2,
+    seed: int = 42,
+    ridge_lambda: float = 1.0,
+    primary_metric: str = "r2",
+    trust_remote_code: bool = True,
+    force_cpu: bool = False,
+    hf_fp16_cuda: bool = True,
+    hf_bnb_8bit: bool = True,
+    vllm_no_compile: bool = False,
+    vllm_attention_backend: Optional[str] = None,
+) -> Tuple[Any, Dict[str, Any]]:
+    """
+    Pilot helper: collect forced-choice activations once, then train utility_A and utility_B probes.
+
+    Returns a combined layer-sweep plot and a dictionary of artifact/result paths.
+    """
+    import matplotlib.pyplot as plt
+
+    extra_env: Dict[str, str] = {}
+    if backend == "hf":
+        extra_env["CUDA_LAUNCH_BLOCKING"] = "1"
+
+    cargv = _collect_argv(
+        model_key=model_key,
+        save_dir=save_dir,
+        save_suffix=save_suffix,
+        options_path=options_path,
+        utilities_path=utilities_path,
+        utilities_dir=utilities_dir,
+        roles=roles,
+        roleset=roleset,
+        roles_config_path=roles_config_path,
+        layers=layers,
+        max_new_tokens_for_parsing=2,
+        max_model_len=max_model_len,
+        max_examples=max_examples,
+        backend=backend,
+        prompt_format="forced_choice",
+        trust_remote_code=trust_remote_code,
+        force_cpu=force_cpu,
+        hf_fp16_cuda=hf_fp16_cuda,
+        hf_bnb_8bit=hf_bnb_8bit,
+        vllm_no_compile=vllm_no_compile,
+        vllm_attention_backend=vllm_attention_backend,
+    )
+    run_linear_probes(repo_root, cargv, extra_env=extra_env or None)
+
+    targv_a = _train_argv(
+        model_key=model_key,
+        save_dir=save_dir,
+        save_suffix=save_suffix,
+        position="option_a_last",
+        target="utility_a",
+        probe_mode=probe_mode,
+        test_fraction=test_fraction,
+        seed=seed,
+        ridge_lambda=ridge_lambda,
+    )
+    run_linear_probes(repo_root, targv_a, extra_env=extra_env or None)
+
+    targv_b = _train_argv(
+        model_key=model_key,
+        save_dir=save_dir,
+        save_suffix=save_suffix,
+        position="option_b_last",
+        target="utility_b",
+        probe_mode=probe_mode,
+        test_fraction=test_fraction,
+        seed=seed,
+        ridge_lambda=ridge_lambda,
+    )
+    run_linear_probes(repo_root, targv_b, extra_env=extra_env or None)
+
+    out_a = probe_results_path(repo_root, save_dir, save_suffix, "option_a_last", "utility_a", probe_mode)
+    out_b = probe_results_path(repo_root, save_dir, save_suffix, "option_b_last", "utility_b", probe_mode)
+    data_a = json.loads(out_a.read_text())
+    data_b = json.loads(out_b.read_text())
+
+    la, ya, sa = _layers_and_metric_series(data_a, primary_metric)
+    lb, yb, sb = _layers_and_metric_series(data_b, primary_metric)
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.8))
+    ax.plot(la, ya, marker="o", color="C0", label=f"Option A probe ({primary_metric})")
+    if sa is not None:
+        ax.fill_between(la, ya - sa, ya + sa, color="C0", alpha=0.2)
+    ax.plot(lb, yb, marker="s", color="C1", label=f"Option B probe ({primary_metric})")
+    if sb is not None:
+        ax.fill_between(lb, yb - sb, yb + sb, color="C1", alpha=0.2)
+    ax.set_xlabel("Layer")
+    ax.set_ylabel(primary_metric)
+    ax.set_title("Forced-choice utility probes by layer")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+
+    info: Dict[str, Any] = {
+        "probe_results_a": out_a,
+        "probe_results_b": out_b,
+        "best_layer_a": _best_layer_maximize(la, ya) if primary_metric != "mse" else _best_layer_minimize(la, ya),
+        "best_layer_b": _best_layer_maximize(lb, yb) if primary_metric != "mse" else _best_layer_minimize(lb, yb),
+        "artifact_paths": artifact_paths(repo_root, save_dir, save_suffix),
+    }
+    return fig, info
 
 
 def default_metric_name(target: str) -> str:
