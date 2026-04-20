@@ -38,6 +38,15 @@ def main() -> None:
         help="Generate up to this many tokens to parse rating (activations still taken at first generated token).",
     )
     parser.add_argument(
+        "--use-chat-template",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Format prompts with tokenizer.apply_chat_template(...) when available. "
+            "Enabled by default for instruct chat models."
+        ),
+    )
+    parser.add_argument(
         "--prompt_format",
         choices=["rating", "forced_choice"],
         default="rating",

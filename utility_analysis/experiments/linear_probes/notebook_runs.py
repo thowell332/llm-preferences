@@ -382,6 +382,7 @@ def _collect_argv(
     roles_config_path: Optional[str] = None,
     layers: str,
     max_new_tokens_for_parsing: int,
+    use_chat_template: bool,
     max_model_len: int,
     max_examples: int,
     backend: str,
@@ -437,6 +438,10 @@ def _collect_argv(
         str(max_examples),
         ]
     )
+    if use_chat_template:
+        argv.append("--use-chat-template")
+    else:
+        argv.append("--no-use-chat-template")
     if trust_remote_code:
         argv.append("--trust_remote_code")
     if force_cpu:
@@ -534,6 +539,7 @@ def run_collect_then_train(
     roles_config_path: Optional[str] = None,
     layers: str,
     max_new_tokens_for_parsing: int,
+    use_chat_template: bool = True,
     max_model_len: int,
     max_examples: int,
     backend: str,
@@ -580,6 +586,7 @@ def run_collect_then_train(
         roles_config_path=roles_config_path_resolved,
         layers=layers,
         max_new_tokens_for_parsing=max_new_tokens_for_parsing,
+        use_chat_template=use_chat_template,
         max_model_len=max_model_len,
         max_examples=max_examples,
         backend=backend,
@@ -697,6 +704,7 @@ def run_forced_choice_dual_probe_pilot(
         roles_config_path=roles_config_path_resolved,
         layers=layers,
         max_new_tokens_for_parsing=2,
+        use_chat_template=True,
         max_model_len=max_model_len,
         max_examples=max_examples,
         backend=backend,

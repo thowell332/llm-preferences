@@ -81,12 +81,43 @@ def _role_with_indefinite_article(role: str) -> str:
     return f"{article} {stripped_role}"
 
 
+def _apply_chat_template_if_available(tokenizer: Any, prompt: str, use_chat_template: bool) -> str:
+    """
+    Optionally wrap a plain-text prompt in the tokenizer's chat template.
+    If ``use_chat_template`` is True, require a valid chat template and fail loudly
+    if unavailable.
+    """
+    if not use_chat_template:
+        return prompt
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    chat_template = getattr(tokenizer, "chat_template", None)
+    if apply_chat_template is None or not chat_template:
+        raise ValueError(
+            "use_chat_template=True but tokenizer has no chat template. "
+            "Use a chat-template-capable tokenizer/model or run with --no-use-chat-template."
+        )
+    try:
+        return str(
+            apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        )
+    except Exception as e:
+        raise ValueError(
+            "Failed to apply tokenizer chat template while use_chat_template=True. "
+            "Use --no-use-chat-template to bypass, or check tokenizer/template compatibility."
+        ) from e
+
+
 def _forced_choice_prompt_and_positions(
     tokenizer: Any,
     role: str,
     option_a: str,
     option_b: str,
     max_model_len: int,
+    use_chat_template: bool,
 ) -> tuple[str, int, int]:
     role_with_article = _role_with_indefinite_article(role)
     prefix = (
@@ -99,6 +130,7 @@ def _forced_choice_prompt_and_positions(
     suffix = '\n\nPlease respond with only "A" or "B".'
 
     prompt = prefix + option_a + middle + option_b + suffix
+    prompt = _apply_chat_template_if_available(tokenizer, prompt, use_chat_template)
     enc_full = tokenizer(
         prompt,
         return_tensors="pt",
@@ -614,6 +646,10 @@ def collect(args: argparse.Namespace) -> None:
 
     print_collect_startup(args, model_path, tokenizer_path, num_layers)
 
+    prompt_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
+    if prompt_tokenizer.pad_token_id is None:
+        prompt_tokenizer.pad_token = prompt_tokenizer.eos_token
+
     if args.prompt_format == "rating":
         metas: List[ExampleMeta] = []
         prompts: List[str] = []
@@ -625,7 +661,8 @@ def collect(args: argparse.Namespace) -> None:
                 option_id = str(opt["id"])
                 if option_id not in utilities:
                     raise ValueError(f"Option id {option_id} missing from utilities.json")
-                prompts.append(RATING_PROMPT_TEMPLATE.format(role=role, option=opt["description"]))
+                raw_prompt = RATING_PROMPT_TEMPLATE.format(role=role, option=opt["description"])
+                prompts.append(_apply_chat_template_if_available(prompt_tokenizer, raw_prompt, args.use_chat_template))
                 metas.append(ExampleMeta(role=role, option_id=option_id, rating=None, utility=float(utilities[option_id])))
             if args.max_examples and len(prompts) >= args.max_examples:
                 break
@@ -651,9 +688,13 @@ def collect(args: argparse.Namespace) -> None:
         else:
             raise ValueError(f"Unknown backend: {args.backend}")
     elif args.prompt_format == "forced_choice":
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        if args.use_chat_template:
+            print(
+                "[collect][forced_choice] use_chat_template=True requested; "
+                "position indexing remains approximate under chat wrapping. "
+                "If this is a concern, run with --no-use-chat-template for forced-choice.",
+                flush=True,
+            )
 
         prompts_fc: List[str] = []
         pos_a_list: List[int] = []
@@ -681,7 +722,12 @@ def collect(args: argparse.Namespace) -> None:
                         if aid not in utilities or bid not in utilities:
                             raise ValueError(f"Option ids missing from utilities.json: {aid}, {bid}")
                         prompt, a_last, b_last = _forced_choice_prompt_and_positions(
-                            tokenizer, role, str(opt_a["description"]), str(opt_b["description"]), args.max_model_len
+                            prompt_tokenizer,
+                            role,
+                            str(opt_a["description"]),
+                            str(opt_b["description"]),
+                            args.max_model_len,
+                            args.use_chat_template,
                         )
                         prompts_fc.append(prompt)
                         pos_a_list.append(a_last)
@@ -777,6 +823,7 @@ def collect(args: argparse.Namespace) -> None:
         "experiment": "linear_probes",
         "prompt_template_version": "v1",
         "prompt_format": args.prompt_format,
+        "use_chat_template": bool(getattr(args, "use_chat_template", False)),
         "backend": args.backend,
         "model_key": args.model_key,
         "model_path": model_path,

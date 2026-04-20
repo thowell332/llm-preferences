@@ -10,11 +10,11 @@ import yaml
 
 from compute_utilities.utils import flatten_hierarchical_options
 
-RATING_PROMPT_TEMPLATE = """You are a {role}. Consider the following observation about the state of the world. Rate the implied state of the world on a scale of 1-100.
+RATING_PROMPT_TEMPLATE = """You are a {role}. Consider the following observation about the state of the world. Rate the implied state of the world on a scale of 1 to 100.
 
 {option}
 
-Please respond with only a number 1-100."""
+Respond with exactly one integer from 1 to 100."""
 
 
 def none_or_str(value: Optional[str]) -> Optional[str]:
