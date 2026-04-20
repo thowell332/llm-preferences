@@ -89,7 +89,7 @@ def main() -> None:
     p.add_argument("--layer-mode", choices=["sample", "all"], default="sample")
     p.add_argument("--num-sampled-layers", type=int, default=10)
     p.add_argument("--max-examples", type=int, default=20)
-    p.add_argument("--max-new-tokens-for-parsing", type=int, default=2)
+    p.add_argument("--max-new-tokens-for-parsing", type=int, default=3)
     p.add_argument("--max-model-len", type=int, default=256)
     p.add_argument("--backend", choices=["hf", "vllm"], default="vllm")
     p.add_argument(

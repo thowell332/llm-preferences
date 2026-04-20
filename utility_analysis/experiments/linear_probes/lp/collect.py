@@ -25,7 +25,7 @@ from lp.data import (
     load_utilities,
     models_yaml_path_for_experiment,
     parse_layers_spec,
-    parse_rating_from_first_two_token_texts,
+    parse_rating_from_first_three_token_texts,
     resolve_model_paths,
 )
 from lp.debug import print_collect_startup
@@ -162,7 +162,7 @@ def collect_hf(
     layers: List[int],
     prompts: List[str],
     metas: List[ExampleMeta],
-) -> tuple[List[torch.Tensor], List[torch.Tensor], List[str], List[str], Optional[int]]:
+) -> tuple[List[torch.Tensor], List[torch.Tensor], List[str], List[str], List[str], Optional[int]]:
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -180,6 +180,7 @@ def collect_hf(
     gen_first_list: List[torch.Tensor] = []
     response_first_token_texts: List[str] = []
     response_second_token_texts: List[str] = []
+    response_third_token_texts: List[str] = []
     hidden_dim: Optional[int] = None
     total = len(prompts)
 
@@ -203,7 +204,7 @@ def collect_hf(
             input_ids=input_ids,
             attention_mask=attention_mask,
             layers=layers,
-            max_new_tokens_for_parsing=2,
+            max_new_tokens_for_parsing=args.max_new_tokens_for_parsing,
         )
         gen_ids = json.loads(gen_ids_json)
         first_token_id = int(gen_ids[0]) if len(gen_ids) >= 1 else None
@@ -218,9 +219,20 @@ def collect_hf(
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )
-        metas[idx - 1].rating = parse_rating_from_first_two_token_texts(first_token_text, second_token_text)
+        third_token_id = int(gen_ids[2]) if len(gen_ids) >= 3 else None
+        third_token_text = tokenizer.decode(
+            [third_token_id] if third_token_id is not None else [],
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True,
+        )
+        metas[idx - 1].rating = parse_rating_from_first_three_token_texts(
+            first_token_text,
+            second_token_text,
+            third_token_text,
+        )
         response_first_token_texts.append(first_token_text)
         response_second_token_texts.append(second_token_text)
+        response_third_token_texts.append(third_token_text)
         Xp = torch.stack([resid_prompt_last[l].to(dtype=torch.float16) for l in layers], dim=0)
         Xg = torch.stack([resid_gen_first[l].to(dtype=torch.float16) for l in layers], dim=0)
         if hidden_dim is None:
@@ -236,7 +248,14 @@ def collect_hf(
             print(f"[collect:hf] debug: stopping after max_examples={args.max_examples}", flush=True)
             break
 
-    return prompt_last_list, gen_first_list, response_first_token_texts, response_second_token_texts, hidden_dim
+    return (
+        prompt_last_list,
+        gen_first_list,
+        response_first_token_texts,
+        response_second_token_texts,
+        response_third_token_texts,
+        hidden_dim,
+    )
 
 
 def _vllm_attention_config_from_args(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
@@ -254,7 +273,7 @@ def collect_vllm(
     layers: List[int],
     prompts: List[str],
     metas: List[ExampleMeta],
-) -> tuple[List[torch.Tensor], List[torch.Tensor], List[str], List[str], Optional[int]]:
+) -> tuple[List[torch.Tensor], List[torch.Tensor], List[str], List[str], List[str], Optional[int]]:
     from vllm import LLM, SamplingParams
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model_path, trust_remote_code=args.trust_remote_code)
@@ -331,11 +350,12 @@ def collect_vllm(
                 f"{e}"
             ) from e
 
-        sampling_params = SamplingParams(temperature=0.0, max_tokens=2)
+        sampling_params = SamplingParams(temperature=0.0, max_tokens=args.max_new_tokens_for_parsing)
         prompt_last_list: List[torch.Tensor] = []
         gen_first_list: List[torch.Tensor] = []
         response_first_token_texts: List[str] = []
         response_second_token_texts: List[str] = []
+        response_third_token_texts: List[str] = []
         hidden_dim: Optional[int] = None
         total = len(prompts)
 
@@ -425,15 +445,32 @@ def collect_vllm(
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=True,
             )
-            metas[idx - 1].rating = parse_rating_from_first_two_token_texts(first_token_text, second_token_text)
+            third_token_text = tokenizer.decode(
+                [int(token_ids[2])] if len(token_ids) >= 3 else [],
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True,
+            )
+            metas[idx - 1].rating = parse_rating_from_first_three_token_texts(
+                first_token_text,
+                second_token_text,
+                third_token_text,
+            )
             response_first_token_texts.append(first_token_text)
             response_second_token_texts.append(second_token_text)
+            response_third_token_texts.append(third_token_text)
             if args.progress_every and (idx % args.progress_every == 0 or idx == total):
                 recent = metas[max(0, idx - args.progress_every) : idx]
                 ok = sum(1 for m in recent if m.rating is not None)
                 print(f"[collect:vllm] {idx}/{total} done (recent parsed ratings: {ok}/{len(recent)})", flush=True)
 
-        return prompt_last_list, gen_first_list, response_first_token_texts, response_second_token_texts, hidden_dim
+        return (
+            prompt_last_list,
+            gen_first_list,
+            response_first_token_texts,
+            response_second_token_texts,
+            response_third_token_texts,
+            hidden_dim,
+        )
 
 
 def collect_hf_forced_choice(
@@ -599,6 +636,7 @@ def collect(args: argparse.Namespace) -> None:
                 gen_first_list,
                 response_first_token_texts,
                 response_second_token_texts,
+                response_third_token_texts,
                 hidden_dim,
             ) = collect_hf(args, model_path, tokenizer_path, layers, prompts, metas)
         elif args.backend == "vllm":
@@ -607,6 +645,7 @@ def collect(args: argparse.Namespace) -> None:
                 gen_first_list,
                 response_first_token_texts,
                 response_second_token_texts,
+                response_third_token_texts,
                 hidden_dim,
             ) = collect_vllm(args, model_path, tokenizer_path, layers, prompts, metas)
         else:
@@ -698,12 +737,18 @@ def collect(args: argparse.Namespace) -> None:
                 )
         responses_path = out_prefix + "_responses.jsonl"
         with open(responses_path, "w") as f:
-            for m, first_token_text, second_token_text in zip(metas, response_first_token_texts, response_second_token_texts):
+            for m, first_token_text, second_token_text, third_token_text in zip(
+                metas,
+                response_first_token_texts,
+                response_second_token_texts,
+                response_third_token_texts,
+            ):
                 rec = {
                     "role": m.role,
                     "option_id": m.option_id,
                     "response_first_token_text": first_token_text,
                     "response_second_token_text": second_token_text,
+                    "response_third_token_text": third_token_text,
                     "is_parseable": m.rating is not None,
                     "parsed_rating": m.rating,
                 }
@@ -741,7 +786,7 @@ def collect(args: argparse.Namespace) -> None:
         "utilities_dir": getattr(args, "utilities_dir", None),
         "roles": roles,
         "layers": layers,
-        "max_new_tokens_for_parsing": 2 if args.prompt_format == "rating" else None,
+        "max_new_tokens_for_parsing": args.max_new_tokens_for_parsing if args.prompt_format == "rating" else None,
         "gpu_memory_utilization": args.gpu_memory_utilization if args.backend == "vllm" else None,
         "max_model_len": args.max_model_len if args.backend == "vllm" else None,
         "vllm_enforce_eager": bool(getattr(args, "vllm_enforce_eager", True)) if args.backend == "vllm" else None,
@@ -755,7 +800,7 @@ def collect(args: argparse.Namespace) -> None:
 
     if args.prompt_format == "rating":
         print(f"[collect] wrote {len(metas)} examples to {meta_path}")
-        print(f"[collect] wrote first-token responses to {responses_path}")
+        print(f"[collect] wrote response token slices to {responses_path}")
         print(f"[collect] wrote activations to {out_prefix}_X_prompt_last.pt and {out_prefix}_X_gen_first.pt")
     else:
         print(f"[collect] wrote {len(meta_rows)} forced-choice examples to {meta_path}")

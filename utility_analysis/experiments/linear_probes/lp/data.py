@@ -10,11 +10,11 @@ import yaml
 
 from compute_utilities.utils import flatten_hierarchical_options
 
-RATING_PROMPT_TEMPLATE = """You are a {role}. Consider the following observation about the state of the world. Rate the implied state of the world on a scale of 1-10.
+RATING_PROMPT_TEMPLATE = """You are a {role}. Consider the following observation about the state of the world. Rate the implied state of the world on a scale of 1-100.
 
 {option}
 
-Please respond with only a number 1-10."""
+Please respond with only a number 1-100."""
 
 
 def none_or_str(value: Optional[str]) -> Optional[str]:
@@ -146,11 +146,11 @@ def parse_rating(text: str) -> Optional[int]:
     if text is None:
         return None
     s = text.strip()
-    m = re.search(r"\b(10|[1-9])\b", s)
+    m = re.search(r"\b(100|[1-9][0-9]?)\b", s)
     if not m:
         return None
     val = int(m.group(1))
-    if 1 <= val <= 10:
+    if 1 <= val <= 100:
         return val
     return None
 
@@ -162,52 +162,55 @@ def parse_rating_from_first_token_text(text: str) -> Optional[int]:
     Rules:
     - Strip leading/trailing whitespace from the token text.
     - If first character is not a digit, treat as unparseable.
-    - Accept only exactly ``"10"`` or a single digit ``"1"``-``"9"``.
+    - Parse the first 1-3 leading digits from the first non-whitespace token.
+    - Accept values in ``1``-``100``.
     """
     if text is None:
         return None
     s = str(text).strip()
     if not s:
         return None
-    if not s[0].isdigit():
+    m = re.match(r"^(\d{1,3})", s)
+    if not m:
         return None
-    if s.startswith("10"):
-        return 10
-    if s[0] in "123456789":
-        return int(s[0])
-    return None
+    val = int(m.group(1))
+    return val if 1 <= val <= 100 else None
 
 
-def parse_rating_from_first_two_token_texts(first_token_text: str, second_token_text: str) -> Optional[int]:
+def parse_rating_from_first_three_token_texts(
+    first_token_text: str,
+    second_token_text: str,
+    third_token_text: str,
+) -> Optional[int]:
     """
-    Parse rating using at most the first two generated token texts.
+    Parse rating using at most the first three generated token texts.
 
     Rules:
-    - If first token is whitespace-only, fall back to second token.
-    - If first non-whitespace token does not start with a digit -> unparseable.
-    - If first non-whitespace token starts with ``10`` -> 10.
-    - If first non-whitespace token starts with ``1`` and next token starts with ``0`` -> 10.
-    - Otherwise if first non-whitespace token starts with ``1``-``9`` -> that digit.
+    - If first token is whitespace-only, shift left to the next token.
+    - Build a candidate string from the first non-whitespace token plus up to two
+      following token texts.
+    - Parse the first contiguous 1-3 leading digits.
+    - Accept values in ``1``-``100``; otherwise unparseable.
     """
     if first_token_text is None:
         return None
-    s1 = str(first_token_text or "").strip()
-    s2 = str(second_token_text or "").strip()
+    s1 = str(first_token_text or "")
+    s2 = str(second_token_text or "")
+    s3 = str(third_token_text or "")
 
-    # Some tokenizers emit leading whitespace/newline as the first token.
-    # In that case, parse from the second token instead.
-    if not s1 and s2:
-        s1, s2 = s2, ""
+    tokens = [s1, s2, s3]
+    while tokens and not tokens[0].strip():
+        tokens.pop(0)
 
-    if not s1 or not s1[0].isdigit():
+    if not tokens:
         return None
-    if s1.startswith("10"):
-        return 10
-    if s1[0] == "1" and s2.startswith("0"):
-        return 10
-    if s1[0] in "123456789":
-        return int(s1[0])
-    return None
+
+    candidate = "".join(tokens[:3]).lstrip()
+    m = re.match(r"^(\d{1,3})", candidate)
+    if not m:
+        return None
+    val = int(m.group(1))
+    return val if 1 <= val <= 100 else None
 
 
 @dataclass

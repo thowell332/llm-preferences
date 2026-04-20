@@ -34,7 +34,7 @@ def main() -> None:
     parser.add_argument(
         "--max_new_tokens_for_parsing",
         type=int,
-        default=2,
+        default=3,
         help="Generate up to this many tokens to parse rating (activations still taken at first generated token).",
     )
     parser.add_argument(
